@@ -1,0 +1,63 @@
+name: music-server
+services:
+  api:
+    image: ${MUSIC_API_IMAGE:-remote-music-api:local}
+    build:
+      context: ./api
+      target: production
+    init: true
+    restart: unless-stopped
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 96
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      NODE_OPTIONS: --max-old-space-size=128
+      DATABASE_URL: file:/srv/music-db/songs.db?connection_limit=1&socket_timeout=5
+      AUDIO_DIRECTORY: /srv/music-audio
+      IMPORT_DIRECTORY: /srv/music-inbox
+      API_TOKEN: ${API_TOKEN:?Create .env with API_TOKEN first}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      LOG_LEVEL: info
+      MAX_AUDIO_BYTES: ${MAX_AUDIO_BYTES:-268435456}
+      MIN_FREE_BYTES: ${MIN_FREE_BYTES:-536870912}
+      LIBRARY_QUOTA_BYTES: ${LIBRARY_QUOTA_BYTES:-10737418240}
+    volumes:
+      - ${MUSIC_DATA_ROOT:-./data/container}/db:/srv/music-db
+      - ${MUSIC_DATA_ROOT:-./data/container}/audio:/srv/music-audio
+      - ${MUSIC_DATA_ROOT:-./data/container}/inbox:/srv/music-inbox:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '2'
+  nginx:
+    image: nginx:1.28-alpine
+    environment:
+      API_UPSTREAM: api:3000
+    restart: unless-stopped
+    mem_limit: 48m
+    memswap_limit: 48m
+    pids_limit: 32
+    ports:
+      - '${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:80'
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ${MUSIC_DATA_ROOT:-./data/container}/audio:/srv/music-audio:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '2'
+

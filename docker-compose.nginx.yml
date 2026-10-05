@@ -1,0 +1,22 @@
+name: music-server-host
+services:
+  nginx:
+    image: nginx:1.28-alpine
+    environment:
+      API_UPSTREAM: host.docker.internal:3000
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    mem_limit: 48m
+    memswap_limit: 48m
+    pids_limit: 32
+    ports:
+      - '127.0.0.1:${HTTP_PORT:-8080}:80'
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./data/audio:/srv/music-audio:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '2'

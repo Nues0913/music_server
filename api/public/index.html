@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>新增歌曲 · 遠端曲庫</title><link rel="stylesheet" href="/admin/style.css">
+  <script src="/admin/app.js" defer></script>
+</head>
+<body>
+  <header><a href="/admin" class="brand"><span class="mark">♫</span> 遠端曲庫</a><span class="badge">管理者上傳</span></header>
+  <main>
+    <p class="eyebrow">YOUR MUSIC LIBRARY</p>
+    <h1>把喜歡的歌，<br>加入你的曲庫。</h1>
+    <p class="intro">選擇音檔，確認歌曲資訊，上傳後即可在曲庫搜尋。</p>
+    <form id="upload-form">
+      <section class="card">
+        <div class="section-heading"><span class="step">01</span><h2>選擇歌曲</h2></div>
+        <label id="drop-zone" class="drop-zone" for="file">
+          <span class="upload-icon" aria-hidden="true">↑</span>
+          <strong id="file-label">拖曳音檔到這裡，或點選檔案</strong>
+          <span id="file-detail">MP3、FLAC、WAV、OGG、Opus、M4A、WebM</span>
+          <input id="file" name="file" type="file" accept=".mp3,.flac,.wav,.ogg,.opus,.m4a,.webm" required>
+        </label>
+        <p id="limit" class="hint">正在讀取上傳限制…</p>
+        <div class="fields">
+          <label>歌名 <span class="optional">選填</span><input id="title" maxlength="500" placeholder="留空則使用音檔標籤或檔名"></label>
+          <label>演出者 <span class="optional">選填</span><input id="artist" maxlength="500" placeholder="留空則使用音檔標籤"></label>
+        </div>
+      </section>
+      <section class="card">
+        <div class="section-heading"><span class="step">02</span><h2>管理者驗證</h2></div>
+        <label for="token">上傳金鑰<input id="token" type="password" minlength="32" required autocomplete="off" spellcheck="false" placeholder="輸入 ADMIN_TOKEN"></label>
+        <div class="token-note"><span class="hint">金鑰只用於本次頁面，不儲存在瀏覽器。</span><button id="clear-token" type="button" class="text-button">清除金鑰</button></div>
+      </section>
+      <section class="result" aria-live="polite" aria-atomic="true">
+        <p id="status">準備好後，按下「上傳歌曲」。</p>
+        <progress id="progress" max="100" value="0" hidden></progress>
+        <p id="song-result" class="hint"></p>
+      </section>
+      <div class="actions"><button id="cancel" type="button" class="secondary" hidden>取消上傳</button><button id="submit" type="submit" disabled>上傳歌曲 <span aria-hidden="true">↗</span></button></div>
+    </form>
+    <footer>相同音檔不會重複加入。每次上傳一首，完成後可繼續新增。</footer>
+  </main>
+</body>
+</html>

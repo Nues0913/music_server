@@ -1,0 +1,29 @@
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url = env("DATABASE_URL")
+}
+
+model Song {
+  id              String   @id @default(uuid())
+  fileKey         String   @unique @map("file_key")
+  title           String
+  artist          String?
+  durationSeconds Float?   @map("duration_seconds")
+  mimeType        String   @map("mime_type")
+  byteSize        Int      @map("byte_size")
+  sha256          String   @unique
+  status          String   @default("active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([status, id])
+  @@index([title])
+  @@index([artist])
+  @@map("songs")
+}
+
