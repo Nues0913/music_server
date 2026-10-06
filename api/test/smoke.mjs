@@ -2,7 +2,7 @@ import 'dotenv/config';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
-const base = process.env.SMOKE_URL ?? 'http://127.0.0.1:8080';
+const base = process.env.SMOKE_URL ?? 'http://127.0.0.1';
 const headers = { Authorization: `Bearer ${process.env.API_TOKEN}` };
 const get = (path, options = {}) => fetch(base + path, { signal: AbortSignal.timeout(15000), ...options });
 assert.equal((await get('/health')).status, 200);

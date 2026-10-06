@@ -39,18 +39,27 @@ services:
         max-size: 5m
         max-file: '2'
   nginx:
-    image: nginx:1.28-alpine
+    image: nginx:1.30-alpine
     environment:
-      API_UPSTREAM: api:3000
+      API_UPSTREAM: ${API_UPSTREAM:-api:3000}
+      AUDIO_ROOT: /srv/music-audio
+      SERVER_NAME: ${SERVER_NAME:-}
+      NGINX_BIND: 0.0.0.0
+    extra_hosts:
+      - host.docker.internal:host-gateway
     restart: unless-stopped
     mem_limit: 48m
     memswap_limit: 48m
     pids_limit: 32
     ports:
-      - '${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:80'
+      - '${NGINX_BIND:-0.0.0.0}:80:80'
+      - '${NGINX_BIND:-0.0.0.0}:443:443'
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - ./nginx:/opt/music-nginx:ro
+      - ./nginx/docker-start.sh:/docker-entrypoint.d/40-music-config.sh:ro
+      - nginx-acme:/var/lib/nginx/acme
+      - ./nginx/locations.conf:/etc/nginx/snippets/music-locations.conf:ro
       - ${MUSIC_DATA_ROOT:-./data/container}/audio:/srv/music-audio:ro
     depends_on:
       api:
@@ -61,3 +70,5 @@ services:
         max-size: 5m
         max-file: '2'
 
+volumes:
+  nginx-acme:

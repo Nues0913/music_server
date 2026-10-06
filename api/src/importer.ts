@@ -30,7 +30,7 @@ export async function importFile(options: ImportOptions, source: string, labels:
   if (info.size === 0 || info.size > maxBytes) throw new Error('Invalid audio file size');
   await mkdir(audioRoot, { recursive: true });
   const lock = join(audioRoot, '.import-lock');
-  // One importer across Windows/containers. A stale lock after a crash needs operator inspection.
+  // One importer per library. A stale lock after a crash needs operator inspection.
   await mkdir(lock);
   const fileKey = `${randomUUID()}${extension}`;
   const temporary = join(audioRoot, `${fileKey}.part`);

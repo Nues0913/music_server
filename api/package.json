@@ -11,15 +11,15 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
-    "test:smoke": "node scripts/smoke.mjs",
-    "test:browser": "node scripts/browser-upload.mjs",
-    "test:upload": "node scripts/upload-smoke.mjs",
+    "test:smoke": "node test/smoke.mjs",
+    "test:browser": "node test/browser-upload.mjs",
+    "test:upload": "node test/upload-smoke.mjs",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
-    "db:push": "prisma db push",
-    "db:studio": "prisma studio --hostname 127.0.0.1 --port 5555 --browser none",
     "import": "tsx src/cli.ts import",
-    "cli": "tsx src/cli.ts"
+    "cli": "tsx src/cli.ts",
+    "test:fixture": "node test/make-fixture.mjs",
+    "test:memory": "bash test/memory.sh"
   },
   "dependencies": {
     "@fastify/multipart": "9.4.0",
