@@ -6,7 +6,7 @@ project_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 command -v node >/dev/null 2>&1 || { printf '%s\n' 'Please install Node.js 22.12+ first.' >&2; exit 1; }
 
 node --input-type=module - "$project_root" <<'NODE'
-import { mkdirSync, existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdirSync, chmodSync, existsSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
@@ -14,6 +14,8 @@ const root = process.argv[2];
 for (const directory of ['data/db', 'data/audio', 'data/inbox', 'data/container/db', 'data/container/audio', 'data/container/inbox']) {
   mkdirSync(join(root, directory), { recursive: true });
 }
+// Nginx serves files from this bind mount as an unprivileged user.
+chmodSync(join(root, 'data/container/audio'), 0o755);
 const rootEnv = join(root, '.env');
 const hostEnv = join(root, 'api/.env');
 const token = () => randomBytes(32).toString('hex');

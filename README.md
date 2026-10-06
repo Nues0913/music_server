@@ -183,6 +183,7 @@ cd ~/music_server
 ```bash
 umask 077
 mkdir -p data/container/{db,audio,inbox}
+chmod 755 data/container/audio
 if [ ! -e .env ]; then
   cp .env.example .env
   sed -i "s/^API_TOKEN=.*/API_TOKEN=$(openssl rand -hex 32)/" .env
