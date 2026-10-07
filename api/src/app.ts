@@ -3,6 +3,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import type { PrismaClient } from '@prisma/client';
 import { resolveAudio } from './files.js';
+import { registerPlaylists } from './playlists.js';
 import { registerAdmin } from './admin.js';
 import { registerUpload, type UploadOptions } from './upload.js';
 
@@ -16,7 +17,7 @@ const publicFields = {
   mimeType: true, byteSize: true, sha256: true, updatedAt: true,
 } as const;
 
-export function buildApp(options: { db: PrismaClient; token: string; audioRoot: string; logging?: boolean; upload?: UploadOptions }) {
+export function buildApp(options: { db: PrismaClient; token: string; audioRoot: string; logging?: boolean; upload?: UploadOptions; playlistToken?: string }) {
   const { db, token, audioRoot } = options;
   const expected = createHash('sha256').update(`Bearer ${token}`).digest();
   const app = Fastify({
@@ -24,6 +25,10 @@ export function buildApp(options: { db: PrismaClient; token: string; audioRoot: 
     bodyLimit: 1024, requestTimeout: 900000, connectionTimeout: 60000,
     ajv: { customOptions: { removeAdditional: false } },
   });
+  if (options.playlistToken) {
+    if (options.playlistToken.length < 32 || options.playlistToken === token || options.playlistToken === options.upload?.adminToken) throw new Error('Playlist token must be distinct and at least 32 characters');
+    app.register(async scope => registerPlaylists(scope, db, options.playlistToken!), { prefix: '/v1' });
+  }
   registerAdmin(app, options.upload?.maxBytes ?? 256 * 1024 * 1024, Boolean(options.upload));
   if (options.upload) {
     app.register(async scope => registerUpload(scope, db, audioRoot, options.upload!));
@@ -32,6 +37,7 @@ export function buildApp(options: { db: PrismaClient; token: string; audioRoot: 
   app.get('/health', async (_request, reply) => {
     try {
       await db.song.findFirst({ select: { id: true } });
+      if (options.playlistToken) await db.playlist.findFirst({ select: { id: true } });
       return { status: 'ok' };
     } catch {
       return reply.code(503).send({ status: 'unavailable' });

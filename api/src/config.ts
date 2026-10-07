@@ -26,3 +26,12 @@ export function adminToken(): string | undefined {
   return value;
 }
 
+
+export function playlistBotToken(): string | undefined {
+  const value = process.env.PLAYLIST_BOT_TOKEN;
+  if (!value) return undefined;
+  if (value.length < 32 || value.startsWith('replace-with-') || value === process.env.API_TOKEN || value === process.env.ADMIN_TOKEN) {
+    throw new Error('PLAYLIST_BOT_TOKEN must be distinct from other tokens and contain at least 32 characters');
+  }
+  return value;
+}

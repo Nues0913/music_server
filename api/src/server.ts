@@ -1,11 +1,11 @@
 import { buildApp } from './app.js';
-import { apiToken, adminToken, audioDirectory, positiveInteger } from './config.js';
+import { apiToken, adminToken, playlistBotToken, audioDirectory, positiveInteger } from './config.js';
 import { connectDatabase } from './db.js';
 
 const token = apiToken();
 const db = await connectDatabase();
 const admin = adminToken();
-const app = buildApp({ db, token, audioRoot: audioDirectory(), logging: true,
+const app = buildApp({ db, token, audioRoot: audioDirectory(), logging: true, playlistToken: playlistBotToken(),
   upload: admin ? {
     adminToken: admin,
     maxBytes: Math.min(positiveInteger('MAX_AUDIO_BYTES', 256 * 1024 * 1024), 256 * 1024 * 1024),

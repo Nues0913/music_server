@@ -19,6 +19,7 @@ services:
       IMPORT_DIRECTORY: /srv/music-inbox
       API_TOKEN: ${API_TOKEN:?Create .env with API_TOKEN first}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      PLAYLIST_BOT_TOKEN: ${PLAYLIST_BOT_TOKEN:-}
       LOG_LEVEL: info
       MAX_AUDIO_BYTES: ${MAX_AUDIO_BYTES:-268435456}
       MIN_FREE_BYTES: ${MIN_FREE_BYTES:-536870912}

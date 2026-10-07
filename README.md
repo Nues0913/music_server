@@ -250,6 +250,9 @@ REMOTE_MUSIC_API_URL=https://music.example.com/
 REMOTE_MUSIC_API_TOKEN=your_music_server_api_token
 REMOTE_MUSIC_MODE=stream
 REMOTE_MUSIC_BUFFER_SECONDS=3
+# 個人播放清單儲存於本服務
+PLAYLIST_API_URL=https://music.example.com/
+PLAYLIST_API_TOKEN=your_dedicated_playlist_bot_token
 ```
 
 `REMOTE_MUSIC_API_URL` 必須是可以串流音檔的 **Nginx 入口**。使用本機 Docker Compose 的預設 HTTP 埠時，同一主機的 Bot 可使用 `http://127.0.0.1/`；若已調整主機發布埠，須一起調整網址。不同主機的 Bot 請使用可連通的 HTTPS 網址。直接連 Fastify 的 `3000` 埠只能取得 `X-Accel-Redirect`，無法播放音檔。
@@ -269,14 +272,53 @@ Bot 端的常用操作：
 
 每個 Discord 使用者可在 Bot 管理多份清單，包含改名、刪除、增刪歌曲及排序。Bot 的清單管理回覆僅本人可見；播放加入所在伺服器的共用佇列。播放控制、音量、循環及指定秒數跳轉對本地與遠端歌曲共用，完整指令及上限以 Bot 的 README 為準。需部署包含 `/playlist` 的 Bot 版本並重新啟動，全球指令同步可能需要等候 Discord。
 
+**清單服務驗證**
+
+Server 的 `PLAYLIST_BOT_TOKEN` 是獨立的受信任 Bot 服務金鑰，至少 32 字元，須與 `API_TOKEN`、`ADMIN_TOKEN` 不同。`scripts/setup.sh` 會為缺少此設定的安裝產生隨機值；既有值及明確留空的設定會保留。將它安全地提供給 Bot 的 `PLAYLIST_API_TOKEN`，並設定 `PLAYLIST_API_URL`，Bot 就會改用 Server 儲存清單。留空 `PLAYLIST_BOT_TOKEN` 會停用清單 API；歌曲 API 照常運作。
+
+每個清單 API 請求使用 `Authorization: Bearer <PLAYLIST_BOT_TOKEN>` 與 `X-Discord-User-Id`。Bot 必須從 Discord interaction 的 `user.id` 取得身分，不可接受使用者自行輸入他人的 ID。Server 驗證服務金鑰後，以該使用者 ID 限定所有查詢及修改；一般播放／上傳金鑰無法存取清單。這是 Bot 到 Server 的受信任服務介面，不是供瀏覽器或一般使用者持金鑰呼叫的公開登入 API；勿將此金鑰交給 Discord 使用者。跨主機連線請使用 HTTPS。
+
 **資料保存與曲目異動**
 
-- 音檔與曲目索引由本服務保存；個人清單以 Discord 使用者 ID 歸屬，存於 **Bot 主機的 `data/playlists.json`**，請持久掛載並備份 Bot 的 `data/`。本服務的 SQLite 不保存 Discord 清單，不需要新增資料表或遷移。
+- 音檔、曲目索引及啟用 Server 模式的個人清單都由本服務保存。清單存於 SQLite 的 `playlists`／`playlist_entries`，需持久掛載並備份目前部署模式的 DB 目錄。清單以 Discord 使用者 ID 歸屬，每人最多 20 份、每份 100 首。刪除清單只刪收藏項目，不刪音檔或歌曲資料。
+- Bot 未設定清單 API 時仍可使用既有本地 JSON 模式；一旦設定任一清單 API 變數，就必須完整設定並成功連線，故障時不會退回本地寫入。
 - Bot 的清單保存遠端曲目 ID 與 API 網址，播放前重新查詢歌曲。停用或移除曲目後，Bot 會略過無法取得的歌曲並回報，原收藏仍保留；全部無法取得時不開始播放。
 - 更換本服務的對外 API 網址後，需在 Bot 重新加入受影響的遠端收藏；還原本服務資料時請保留曲目 ID。
 - `stream` 模式邊接收邊播放；指定秒數跳轉需重新讀取並解碼到目標位置，受 Bot 載入逾時限制。慢速網路可選 `download`，先下載並驗證大小及 SHA-256 後播放。
 
 整合檢查請先完成本文件的 `test:smoke`，確認 Nginx 的授權、HEAD、Range 與音檔串流正常，再於 Discord 使用遠端選歌與清單播放。只有 `/health` 成功不代表音檔串流已就緒。
+
+## 播放清單 API 與升級
+
+下列介面皆需專用 Bot 金鑰及 `X-Discord-User-Id`（17–20 位數的 Discord ID）。其他使用者的清單／項目回傳 404；驗證失敗為 401，格式錯誤為 400，容量、重複名稱與過期版本為 409。所有寫入在 SQLite transaction 內執行，讀寫結果都有 `Cache-Control: no-store`。
+
+| 方法與路徑 | 請求／結果 |
+| --- | --- |
+| `GET /v1/playlists` | `{items: Playlist[]}`，只回傳該使用者的清單 |
+| `POST /v1/playlists` | `{name, tracks?: Track[]}`，201 回傳新清單 |
+| `GET /v1/playlists/:id` | 讀取自己的完整清單 |
+| `PATCH /v1/playlists/:id` | `{name, revision}`，重新命名 |
+| `DELETE /v1/playlists/:id` | `{revision}`，204 無內容 |
+| `POST /v1/playlists/:id/entries` | `{tracks, revision}`，整批加入歌曲 |
+| `PATCH /v1/playlists/:id/entries/:entryId` | `{position, revision}`，移到從 1 起算的位置 |
+| `DELETE /v1/playlists/:id/entries/:entryId` | `{revision}`，移除指定項目 |
+| `PUT /v1/playlists/:id/import` | `{name, revision, entries}`，保留舊 ID 的可重跑匯入 |
+
+`Playlist` 包含 `id`、`ownerId`、`name`、`revision`、依序排列的 `entries`。`Track` 包含 `source: local|remote`、`id`、`title`、選用 `artist`；遠端曲目另須 `library`（原 API 網址）。`entries` 比 `Track` 多出獨立的 UUID `entryId`，因此重複收藏同一歌曲仍可分別排序及移除。標題／演出者最多 500 字，清單名稱正規化後為 1–60 字；同一使用者不可使用重複名稱。新增／匯入請求上限 512 KiB，不接受音檔、磁碟路徑或金鑰作為收藏資料。
+
+修改前請先讀取清單，提交回傳的 `revision`。版本過期時整個 transaction 會回滾，請重新讀取後由使用者確認操作，勿自動覆蓋。匯入時保留清單 ID、項目 ID 與原版本；相同來源內容重跑會回傳現有資料，不會覆蓋匯入後的編輯，來源內容衝突則回傳 409。
+
+升級步驟：
+
+1. 備份現有 SQLite 與 Bot 的 `data/playlists.json`；暫停 Bot 的清單寫入。
+2. 更新 Server 並執行 `bash scripts/setup.sh`。本機從 `api/` 執行 `npm ci && npm run db:generate && npm run db:migrate && npm run build` 並重新啟動 Server；Docker 執行 `docker compose up -d --build`，啟動時自動套用新增資料表的 migration，保留既有 `songs`。
+3. 安全地設定 Bot 的 `PLAYLIST_API_URL`、`PLAYLIST_API_TOKEN`（Server 的專用 Bot 金鑰），更新並建置 Bot。
+4. 若已有本地 JSON 清單，在 Bot 根目錄執行 `node scripts/import-playlists.mjs data/playlists.json`。原檔不會刪除／覆寫；中途失敗可修正問題後用同一檔案重跑。未啟用新版 API 時匯入會失敗，勿先移除備份。
+5. 重新啟動 Bot，驗證 `/playlist list`、新增、排序及播放；跨主機部署須確認 Nginx 入口可用。
+
+若 Prisma 回報空白的 `Schema engine error`，請檢查執行環境是否帶入了限制過嚴的 `RUST_LOG`；可使用 `RUST_LOG=info npm run db:migrate`。Prisma CLI 與 Client 固定使用 6.19.3。
+
+`npm test` 會在暫存 SQLite 驗證原歌曲 API 與清單權限、CRUD、容量、版本競態、持久化和匯入。兩個專案完成建置後，可在 Bot 根目錄執行 `node scripts/test-playlist-server.mjs ../music_server/api`，以真實 HTTP 與 SQLite 驗證跨專案流程，不會修改正式資料。
 
 ## 環境變數
 
@@ -286,6 +328,7 @@ Docker 部署修改根目錄 `.env`；Linux 本機 API 修改 `api/.env`。`scri
 | --- | --- | --- |
 | `API_TOKEN` | 腳本產生的 64 字元隨機金鑰 | 搜尋、查詢與播放授權；至少 32 字元，必須替換範例占位文字 |
 | `ADMIN_TOKEN` | 另一組隨機金鑰 | 上傳授權；至少 32 字元且須與 API_TOKEN 不同，留空會停用上傳 |
+| `PLAYLIST_BOT_TOKEN` | setup.sh 產生的獨立隨機金鑰 | 受信任 Bot 的個人清單 API 授權；至少 32 字元，須與另外兩種金鑰不同；明確留空則停用清單 API |
 | `MAX_AUDIO_BYTES` | `268435456`（256 MiB） | 每首音檔大小上限；HTTP 上傳即使設更大仍限制為 256 MiB，CLI 匯入使用設定值 |
 | `MIN_FREE_BYTES` | `536870912`（512 MiB） | 上傳／匯入時要求保留的磁碟空間 |
 | `LIBRARY_QUOTA_BYTES` | `10737418240`（10 GiB） | 曲庫容量上限，包含停用曲目 |
