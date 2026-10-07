@@ -241,6 +241,43 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 
 Nginx 支援單一 Range，`/protected-audio/` 為 internal。SQLite 使用 WAL、單一連線與有界快取；一般索引不保證加速任意中文子字串搜尋。
 
+## Discord Bot 整合與個人播放清單
+
+`Cirno_Discord_Bot` 可使用本服務作為遠端曲庫，並將遠端與 Bot 主機的本地歌曲放進同一播放佇列或個人播放清單。在 **Bot 的** `.env` 設定：
+
+```dotenv
+REMOTE_MUSIC_API_URL=https://music.example.com/
+REMOTE_MUSIC_API_TOKEN=your_music_server_api_token
+REMOTE_MUSIC_MODE=stream
+REMOTE_MUSIC_BUFFER_SECONDS=3
+```
+
+`REMOTE_MUSIC_API_URL` 必須是可以串流音檔的 **Nginx 入口**。使用本機 Docker Compose 的預設 HTTP 埠時，同一主機的 Bot 可使用 `http://127.0.0.1/`；若已調整主機發布埠，須一起調整網址。不同主機的 Bot 請使用可連通的 HTTPS 網址。直接連 Fastify 的 `3000` 埠只能取得 `X-Accel-Redirect`，無法播放音檔。
+
+`REMOTE_MUSIC_API_TOKEN` 使用目前部署模式的 `API_TOKEN`，不要使用管理上傳的 `ADMIN_TOKEN`。Docker 模式的金鑰在根目錄 `.env`，本機 API 模式則在 `api/.env`；兩份既有設定不會自動同步。請透過安全的環境設定將金鑰提供給 Bot，不要提交金鑰到 Git。
+
+Bot 端的常用操作：
+
+| 指令 | 用途 |
+| --- | --- |
+| `/music library source:remote` | 瀏覽本服務的曲庫 |
+| `/music play source:remote song:歌曲` | 播放遠端歌曲或加入共用佇列 |
+| `/playlist create name:通勤` | 建立自己的清單 |
+| `/playlist add playlist:通勤 source:remote song:歌曲` | 收藏遠端曲目；也可選本地來源 |
+| `/playlist add-current playlist:通勤` | 收藏 Bot 目前播放的曲目 |
+| `/playlist play playlist:通勤 shuffle:true` | 將清單加入播放，可選隨機順序 |
+
+每個 Discord 使用者可在 Bot 管理多份清單，包含改名、刪除、增刪歌曲及排序。Bot 的清單管理回覆僅本人可見；播放加入所在伺服器的共用佇列。播放控制、音量、循環及指定秒數跳轉對本地與遠端歌曲共用，完整指令及上限以 Bot 的 README 為準。需部署包含 `/playlist` 的 Bot 版本並重新啟動，全球指令同步可能需要等候 Discord。
+
+**資料保存與曲目異動**
+
+- 音檔與曲目索引由本服務保存；個人清單以 Discord 使用者 ID 歸屬，存於 **Bot 主機的 `data/playlists.json`**，請持久掛載並備份 Bot 的 `data/`。本服務的 SQLite 不保存 Discord 清單，不需要新增資料表或遷移。
+- Bot 的清單保存遠端曲目 ID 與 API 網址，播放前重新查詢歌曲。停用或移除曲目後，Bot 會略過無法取得的歌曲並回報，原收藏仍保留；全部無法取得時不開始播放。
+- 更換本服務的對外 API 網址後，需在 Bot 重新加入受影響的遠端收藏；還原本服務資料時請保留曲目 ID。
+- `stream` 模式邊接收邊播放；指定秒數跳轉需重新讀取並解碼到目標位置，受 Bot 載入逾時限制。慢速網路可選 `download`，先下載並驗證大小及 SHA-256 後播放。
+
+整合檢查請先完成本文件的 `test:smoke`，確認 Nginx 的授權、HEAD、Range 與音檔串流正常，再於 Discord 使用遠端選歌與清單播放。只有 `/health` 成功不代表音檔串流已就緒。
+
 ## 環境變數
 
 Docker 部署修改根目錄 `.env`；Linux 本機 API 修改 `api/.env`。`scripts/setup.sh` 會建立缺少的檔案與隨機金鑰，既有的兩份設定不會自動同步。以下是範例設定值；金鑰請使用腳本產生的值。
