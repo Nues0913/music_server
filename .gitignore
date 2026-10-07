@@ -6,5 +6,5 @@ api/dist/
 api/.test-data/
 api/prisma/*.db*
 *.log
-/參考用前端源碼/
 
+api/test/results/

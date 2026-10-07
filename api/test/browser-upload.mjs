@@ -4,9 +4,9 @@ import { chromium } from 'playwright-core';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
-const base = process.env.SMOKE_URL ?? 'http://127.0.0.1:8080';
+const base = process.env.SMOKE_URL ?? 'http://127.0.0.1';
 const browser = await chromium.launch({
-  executablePath: process.env.BROWSER_PATH ?? 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+  executablePath: process.env.BROWSER_PATH ?? '/usr/bin/chromium',
   headless: true,
 });
 try {
@@ -39,11 +39,11 @@ try {
   assert.equal(await page.evaluate(() => localStorage.length), 0);
   await page.locator('#clear-token').click();
   assert.equal(await page.locator('#token').inputValue(), '');
-  await mkdir('../data/verification', { recursive: true });
-  await page.screenshot({ path: '../data/verification/upload-desktop.png', fullPage: true });
+  await mkdir('test/results', { recursive: true });
+  await page.screenshot({ path: 'test/results/upload-desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-  await page.screenshot({ path: '../data/verification/upload-mobile.png', fullPage: true });
+  await page.screenshot({ path: 'test/results/upload-mobile.png', fullPage: true });
   assert.deepEqual(errors, []);
   console.log(`PASS: browser upload, admin authorization, title/artist, token clearing, no localStorage, desktop/mobile layout (${result.status})`);
 } finally {

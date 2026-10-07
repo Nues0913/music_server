@@ -1,0 +1,33 @@
+acme_issuer letsencrypt {
+    uri ${ACME_DIRECTORY};
+    state_path ${ACME_STATE};
+    ssl_trusted_certificate ${ACME_TRUSTED_CERT};
+    accept_terms_of_service;
+}
+
+# Only the configured domain reaches the API.
+server {
+    listen ${NGINX_BIND}:80 default_server;
+    return 444;
+}
+server {
+    listen ${NGINX_BIND}:443 ssl default_server;
+    ssl_reject_handshake on;
+    return 444;
+}
+
+server {
+    listen ${NGINX_BIND}:80;
+    listen ${NGINX_BIND}:443 ssl;
+    server_name ${SERVER_NAME};
+
+    acme_certificate letsencrypt;
+    ssl_certificate $acme_certificate;
+    ssl_certificate_key $acme_certificate_key;
+    ssl_certificate_cache max=2;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    set $audio_root "${AUDIO_ROOT}";
+    set $api_backend "${API_UPSTREAM}";
+    include /etc/nginx/snippets/music-locations.conf;
+}
