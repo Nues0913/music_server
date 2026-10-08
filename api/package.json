@@ -22,7 +22,7 @@
     "test:memory": "bash test/memory.sh",
     "check:architecture": "node scripts/check-architecture.mjs",
     "typecheck": "tsc --noEmit",
-    "test:unit": "node --import tsx --test --test-concurrency=1 test/admin-controller.test.ts test/admin-browser.test.ts test/migration-sql.test.ts test/playlist-model.test.ts test/http-contracts.test.ts"
+    "test:unit": "node --import tsx --test --test-concurrency=1 test/admin-controller.test.ts test/admin-browser.test.ts test/migration-sql.test.ts test/playlist-model.test.ts test/http-contracts.test.ts test/shutdown.test.ts"
   },
   "dependencies": {
     "@fastify/multipart": "9.4.0",

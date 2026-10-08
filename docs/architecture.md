@@ -53,7 +53,7 @@ Bot 必須傳它實際讀到的 revision。409 後重新讀取並讓使用者確
 
 `importFile` 擁有 `.import-lock`、暫存複製與發布流程：檢查來源／容量 → 串流複製及雜湊 → 去重 → metadata → rename → DB 建檔。失敗清理未發布檔案，並在外層 finally 釋放鎖；原有 crash lock 的人工檢查規則保留。DB rollback 無法撤回檔案系統改名，因此檔案發布失敗補償保持明確。
 
-`server.ts` 在關閉 Fastify 時斷開 DB，CLI 在 finally 斷開 DB。程序內 slot 與跨程序 filesystem lock 職責不同，不把記憶體布林值當跨程序鎖。
+`server.ts` 透過 `infrastructure/shutdown.ts` 管理停止：SIGTERM、SIGINT 與啟動失敗共用同一個 stop promise，避免重複關閉。Fastify 停止接收新請求並排空已接受的 HTTP 工作後，onClose 才斷開 DB；即使斷線失敗也移除訊號 listeners。測試使用實際 HTTP socket 與注入的 DB 操作確認這個順序，不替代原生 Prisma 交易測試。CLI 在 finally 斷開 DB。程序內 slot 與跨程序 filesystem lock 職責不同，不把記憶體布林值當跨程序鎖。
 
 ## 前端邊界
 
