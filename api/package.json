@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "start": "node dist/server.js",
     "test": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
     "test:smoke": "node test/smoke.mjs",
@@ -19,7 +19,11 @@
     "import": "tsx src/cli.ts import",
     "cli": "tsx src/cli.ts",
     "test:fixture": "node test/make-fixture.mjs",
-    "test:memory": "bash test/memory.sh"
+    "test:memory": "bash test/memory.sh",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --import tsx --test --test-concurrency=1 test/admin-controller.test.ts test/admin-browser.test.ts test/migration-sql.test.ts test/playlist-model.test.ts test/http-contracts.test.ts test/shutdown.test.ts",
+    "test:nginx-contracts": "npm run build && node test/nginx-contracts.mjs"
   },
   "dependencies": {
     "@fastify/multipart": "9.4.0",
@@ -27,7 +31,7 @@
     "dotenv": "17.2.1",
     "fastify": "5.12.5",
     "music-metadata": "11.16.1",
-    "prisma": "^6.12.0"
+    "prisma": "6.19.3"
   },
   "devDependencies": {
     "@types/node": "22.18.6",

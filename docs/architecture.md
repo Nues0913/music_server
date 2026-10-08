@@ -1,0 +1,86 @@
+# 音樂服務前後端架構
+
+以 `dev` 的資料與 API 契約為基礎，依 pragmatic-modular-architecture skill 重新劃分責任。維持一個 Fastify API、SQLite 與 Nginx，管理頁使用原生 ES modules；不增加框架、容器或空的 CRUD 抽象層。
+
+```text
+api/
+  src/
+    app.ts                         HTTP 應用組裝與共用錯誤邊界
+    server.ts / cli.ts             程序啟動、設定及結束
+    config.ts                      已有的環境設定驗證
+    infrastructure/database.ts     Prisma 連線與 SQLite 設定
+    shared/http/                   Bearer 驗證與共用 schema
+    modules/
+      songs/                       搜尋、公開 DTO、音檔可用性與路由
+      playlists/                   schema、規則、transaction、錯誤及路由
+      ingestion/                   metadata 與匯入／發布流程
+      uploads/                     multipart、容量、上傳所有權及路由
+      admin/                       管理頁及明確允許的靜態資源
+    storage/                       路徑、格式、來源檢查、磁碟預算及串流複製
+  public/
+    app.js                         頁面組裝
+    uploads/
+      controller.js                上傳狀態、取消、回復與過期事件保護
+      client.js                    HTTP／XHR、timeout、response 與進度
+      view.js                      DOM、畫面更新與 listener 綁定／移除
+      validation.js                檔案格式與大小規則
+  prisma/                          原有 schema 及 migrations
+  test/                            DB、HTTP、storage、controller 與瀏覽器測試
+  scripts/check-architecture.mjs    靜態依賴與循環檢查
+```
+
+## 後端邊界
+
+`app.ts` 建立具體 service 並交给 routes；routes 只處理驗證、HTTP schema、參數／狀態碼與錯誤映射。service 管資料查詢、操作流程及 transaction。純粹的清單名稱、歌曲參照、排序與公開資料投影放在 model；型別可由 Prisma 推導，但不在 HTTP／管理頁暴露 ORM 私有欄位。
+
+小型專案直接在 service 使用注入的 Prisma Client，避免增加只轉呼叫 ORM 的 repository。檔案操作有自己的 storage 模組，不能反向引用 HTTP／feature。上傳與 CLI 共用 ingestion，避免兩條流程的 metadata、去重及發布規則分歧。
+
+`SongService` 查資料並驗證檔案存在、路徑及大小，route 只回 `X-Accel-Redirect`。音檔 bytes、HEAD／Range、Content-Length 繼續由 Nginx 負責。
+
+## 清單 transaction 與跨庫契約
+
+同一份清單及其中 entries 共用 revision。rename/add/remove/move 在同一 transaction 內先驗證 owner，再以 `id + ownerId + revision` 的條件更新原子取得版本；受影響筆數為 0 時回 409，不修改 entries。取得版本後若容量、排序、資料驗證或寫入失敗，transaction 連同 revision 增加一起回滾。刪除也以相同 owner/revision 條件刪除，過期確認回 409。
+
+Bot 必須傳它實際讀到的 revision。409 後重新讀取並讓使用者確認，不自動重試覆蓋。歌曲與清單共用 `API_TOKEN`，清單再以 `X-Discord-User-Id` 限定擁有者，不能從請求 body 接收 ownerId。
+
+revision 的 HTTP 驗證上限與 Prisma Int 一致，為 2147483647。從 2147483646 更新一次可到達上限；達上限後，rename/add/remove/move 在 transaction 內回 409，不再遞增或修改項目。GET/list 及帶正確版本的整份清單 DELETE 仍可使用，避免清單被版本驗證永久鎖住。過期版本仍回原有的更新衝突，其他擁有者仍回 404。
+
+清單 API 保存及回傳收藏參照，不在讀取清單時檢查音檔或過濾不可用歌曲；本地檔案可能位於 Bot 主機，遠端歌曲也可能暫時無法取得。曲庫檔案不可讀時，歌曲 audio 路由可回 404，但清單 GET/list 仍保留全部 entries、順序、重複收藏及 revision。Bot 在播放時分別解析來源、略過不可用項目並通知使用者；純遠端清單不依賴 Bot 的本地曲庫。新增 HTTP 契約測試使用實際檔案錯誤與注入的 DB 讀取資料驗證這個邊界，不取代原生 Prisma 持久化測試。
+
+整份 PR 新增 `Playlist`／`PlaylistEntry` schema 與 `20261007000000_playlists` migration，並包含 `20261008000000_remove_playlist_import` migration；後者只移除 `import_hash`，保留 ID、entries、revision 與外鍵。升級需執行 `npm run db:generate`、`npm run db:migrate` 並重新建置啟動；Docker 啟動時會套用 migration。JSON 清單匯入 API 不再提供，CLI 音檔匯入維持原功能。
+
+## 上傳與資源所有權
+
+`UploadService` 擁有程序內一筆上傳的 slot 與 staging 目錄；finally 清理 staging，即使清理失敗也釋放 slot。`receiveMultipart` 以 pipeline 寫入檔案，限制欄位、大小及磁碟預算，不將音檔全部載入 RAM。
+
+`importFile` 擁有 `.import-lock`、暫存複製與發布流程：檢查來源／容量 → 串流複製及雜湊 → 去重 → metadata → rename → DB 建檔。失敗清理未發布檔案，並在外層 finally 釋放鎖；原有 crash lock 的人工檢查規則保留。DB rollback 無法撤回檔案系統改名，因此檔案發布失敗補償保持明確。
+
+`server.ts` 透過 `infrastructure/shutdown.ts` 管理停止：SIGTERM、SIGINT 與啟動失敗共用同一個 stop promise，避免重複關閉。Fastify 停止接收新請求並排空已接受的 HTTP 工作後，onClose 才斷開 DB；即使斷線失敗也移除訊號 listeners。測試使用實際 HTTP socket 與注入的 DB 操作確認這個順序，不替代原生 Prisma 交易測試。CLI 在 finally 斷開 DB。程序內 slot 與跨程序 filesystem lock 職責不同，不把記憶體布林值當跨程序鎖。
+
+## 前端邊界
+
+controller 管歌曲佇列、逐首 metadata／狀態、目前 request、busy、啟用狀態與檔案上限，client 管網路，view 管 DOM。多首選檔／拖曳仍依序呼叫單檔 POST /v1/songs，不改 multipart 上限或後端上傳 slot。以 request generation 拒絕已完成／取消上傳的晚到進度，dispose 取消請求並忽略晚到結果、不開始下一首；一般 pagehide 清理 listeners，瀏覽器保留頁面於 bfcache 時保留可恢復狀態。
+
+選檔後由佇列持有 File，清空 picker 以允許再次選取相同檔案；成功／重複會釋放該首 File 並保留結果。格式或大小不符的檔案標記為 invalid 並略過，失敗／取消／待處理的檔案保留供重試。取消停止剩餘項目；個別上傳錯誤繼續，其餘項目遇 401、403 或 507 才停止整批。批次結束釋放 busy，再次提交僅處理未完成項目。重新選檔替換清單，狀態僅存在目前頁面。token 僅來自頁面 input，不寫 localStorage/sessionStorage，不放在 URL。檔名與伺服器回應以 textContent 顯示，靜態資源使用明確清單，保留 CSP、nosniff 與 no-store。
+
+## 驗證與維護
+
+從 `api/` 執行：
+
+```bash
+npm ci
+npm run db:generate
+npm run build
+npm run typecheck
+npm run check:architecture
+npm run test:unit
+npm test
+```
+
+`test:unit` 不需 Prisma 原生引擎：測管理頁 controller、Chromium 操作、HTTP 契約、清單規則及實際 SQLite migration SQL。Chromium 預設 `/usr/bin/chromium`，可由 BROWSER_PATH 指定；找不到時瀏覽器案例會標記 skip。測試全程使用 fixture／暫存資料，不寫正式曲庫。
+
+`npm test` 另外執行原生 Prisma／SQLite 整合測試：匯入、去重、容量、權限、兩個獨立 Client 的同版本競爭、transaction rollback 與持久化。HTTP contract 測試注入 service，只證明 HTTP 邊界，不能替代這些 DB 測試。正常 generation/build 完成後，Bot 的 `scripts/test-playlist-server.mjs` 驗證真實跨庫 HTTP 與 SQLite。
+
+本次已在可用的 Prisma 原生引擎上驗證 SQLite 交易、持久化及真實跨庫 HTTP 整合；migration 保存測試在套用 migration 後明確重新連線，再檢查既有項目與版本。部署環境仍需正常執行 db:generate 與 db:migrate，不可使用只產生型別而忽略原生引擎的 Client。API／DB 整合測試不替代正式 Nginx／Discord 的音檔傳送與長時間播放驗證。
+
+架構檢查限制 shared/storage/model 的反向依賴、管理頁 view/client 的依賴方向及静態 runtime 循環。新增功能先放到對應 module，由 app 組裝；需要新的副作用邊界或獨立狀態才抽 service，不機械式增加層級。

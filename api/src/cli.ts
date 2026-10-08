@@ -1,6 +1,6 @@
 import { audioDirectory, importDirectory, positiveInteger } from './config.js';
-import { connectDatabase } from './db.js';
-import { importInbox } from './importer.js';
+import { connectDatabase } from './infrastructure/database.js';
+import { importInbox } from './modules/ingestion/importer.js';
 
 const [command, id] = process.argv.slice(2);
 if (!['import', 'disable', 'enable'].includes(command ?? '')) {
@@ -30,4 +30,3 @@ if (!['import', 'disable', 'enable'].includes(command ?? '')) {
     await db.$disconnect();
   }
 }
-

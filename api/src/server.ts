@@ -1,6 +1,7 @@
 import { buildApp } from './app.js';
 import { apiToken, adminToken, audioDirectory, positiveInteger } from './config.js';
-import { connectDatabase } from './db.js';
+import { connectDatabase } from './infrastructure/database.js';
+import { registerShutdown } from './infrastructure/shutdown.js';
 
 const token = apiToken();
 const db = await connectDatabase();
@@ -13,14 +14,11 @@ const app = buildApp({ db, token, audioRoot: audioDirectory(), logging: true,
     quotaBytes: positiveInteger('LIBRARY_QUOTA_BYTES', 10 * 1024 * 1024 * 1024),
   } : undefined,
 });
-app.addHook('onClose', async () => { await db.$disconnect(); });
-for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-  process.once(signal, () => { void app.close().catch(() => { process.exitCode = 1; }); });
-}
+const stop = registerShutdown(app, db);
 try {
   await app.listen({ port: 3000, host: process.env.HOST ?? '127.0.0.1' });
 } catch (error) {
   app.log.error(error);
-  await app.close();
+  await stop();
   process.exitCode = 1;
 }

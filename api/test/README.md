@@ -15,6 +15,16 @@ npm test
 
 ## 經 Nginx 測試
 
+隔離契約回歸測試需要 Docker（`nginx:1.30-alpine`），從 `api/` 執行：
+
+```bash
+npm run test:nginx-contracts
+# 先建置 Bot 後，可一起驗證真正的遠端清單解析：
+npm run test:nginx-contracts -- ../../Cirno_Discord_Bot
+```
+
+測試使用暫存 SQLite、合成音檔、測試金鑰與獨立容器／網路，結束後清除。涵蓋 host alias、512 KiB 清單限制、100 首 JSON、私有音檔邊界、30 檔批次限流重試，以及 Compose service 換 IP 後的 DNS 更新。指定 Bot 路徑時，另測 100 個重複項目與 100 首不同有效歌曲，不登入 Discord。不能與 Bot 的建置／`npm test` 同時執行，避免 dist 被清除。
+
 先依根目錄 README 啟動 Linux API 與一個 Nginx 入口：
 
 ```bash
@@ -59,3 +69,8 @@ python3 api/test/nginx.py
 ```
 
 使用 Pebble 私人測試 CA，驗證 Nginx 從零透過 HTTP-01 取得憑證、容器重建後載入既有憑證及短效憑證自動續期，並測試 HTTP／HTTPS、網域限制、代理標頭、上傳與 Range。測試不連正式 Let's Encrypt，完成後清除測試容器、網路與憑證 volume。
+
+
+## 架構重構檢查
+
+`npm run check:architecture` 檢查依賴方向與 runtime import 循環。`npm run test:unit` 使用 fixture 測 HTTP、管理頁、清單規則及真實 SQLite migration SQL，不需 Prisma 原生引擎；Chromium 可用 BROWSER_PATH 指定。這些測試不替代上方的 Prisma transaction／容量／持久化整合測試。
