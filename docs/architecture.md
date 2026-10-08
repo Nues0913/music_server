@@ -41,11 +41,13 @@ api/
 
 同一份清單及其中 entries 共用 revision。rename/add/remove/move 在同一 transaction 內先驗證 owner，再以 `id + ownerId + revision` 的條件更新原子取得版本；受影響筆數為 0 時回 409，不修改 entries。取得版本後若容量、排序、資料驗證或寫入失敗，transaction 連同 revision 增加一起回滾。刪除也以相同 owner/revision 條件刪除，過期確認回 409。
 
-Bot 必須傳它實際讀到的 revision。409 後重新讀取並讓使用者確認，不自動重試覆蓋。專用 Bot 金鑰與 `X-Discord-User-Id` 仍是清單信任邊界，不能從請求 body 接收 ownerId。
+Bot 必須傳它實際讀到的 revision。409 後重新讀取並讓使用者確認，不自動重試覆蓋。歌曲與清單共用 `API_TOKEN`，清單再以 `X-Discord-User-Id` 限定擁有者，不能從請求 body 接收 ownerId。
+
+revision 的 HTTP 驗證上限與 Prisma Int 一致，為 2147483647。從 2147483646 更新一次可到達上限；達上限後，rename/add/remove/move 在 transaction 內回 409，不再遞增或修改項目。GET/list 及帶正確版本的整份清單 DELETE 仍可使用，避免清單被版本驗證永久鎖住。過期版本仍回原有的更新衝突，其他擁有者仍回 404。
 
 清單 API 保存及回傳收藏參照，不在讀取清單時檢查音檔或過濾不可用歌曲；本地檔案可能位於 Bot 主機，遠端歌曲也可能暫時無法取得。曲庫檔案不可讀時，歌曲 audio 路由可回 404，但清單 GET/list 仍保留全部 entries、順序、重複收藏及 revision。Bot 在播放時分別解析來源、略過不可用項目並通知使用者；純遠端清單不依賴 Bot 的本地曲庫。新增 HTTP 契約測試使用實際檔案錯誤與注入的 DB 讀取資料驗證這個邊界，不取代原生 Prisma 持久化測試。
 
-本次沒有更動 schema 或 migrations。dev 已移除的清單匯入 API 維持不存在；既有 `remove_playlist_import` migration 只移除 `import_hash`，保留 ID、entries、revision 與外鍵。
+整份 PR 新增 `Playlist`／`PlaylistEntry` schema 與 `20261007000000_playlists` migration，並包含 `20261008000000_remove_playlist_import` migration；後者只移除 `import_hash`，保留 ID、entries、revision 與外鍵。升級需執行 `npm run db:generate`、`npm run db:migrate` 並重新建置啟動；Docker 啟動時會套用 migration。JSON 清單匯入 API 不再提供，CLI 音檔匯入維持原功能。
 
 ## 上傳與資源所有權
 
@@ -79,6 +81,6 @@ npm test
 
 `npm test` 另外執行原生 Prisma／SQLite 整合測試：匯入、去重、容量、權限、兩個獨立 Client 的同版本競爭、transaction rollback 與持久化。HTTP contract 測試注入 service，只證明 HTTP 邊界，不能替代這些 DB 測試。正常 generation/build 完成後，Bot 的 `scripts/test-playlist-server.mjs` 驗證真實跨庫 HTTP 與 SQLite。
 
-本次工作環境拒絕 `binaries.prisma.sh` 下載（403）。已用同版本官方 generator 依原 schema 離線產生型別做編譯；該忽略原生引擎的生成結果位於未提交的 node_modules，**不是部署用 Client**。需在可下載引擎的環境正常執行 db:generate，再補跑原生 DB、跨庫整合與 Docker／Nginx 驗證；不將未執行的項目宣稱通過。
+本次已在可用的 Prisma 原生引擎上驗證 SQLite 交易、持久化及真實跨庫 HTTP 整合；migration 保存測試在套用 migration 後明確重新連線，再檢查既有項目與版本。部署環境仍需正常執行 db:generate 與 db:migrate，不可使用只產生型別而忽略原生引擎的 Client。API／DB 整合測試不替代正式 Nginx／Discord 的音檔傳送與長時間播放驗證。
 
 架構檢查限制 shared/storage/model 的反向依賴、管理頁 view/client 的依賴方向及静態 runtime 循環。新增功能先放到對應 module，由 app 組裝；需要新的副作用邊界或獨立狀態才抽 service，不機械式增加層級。

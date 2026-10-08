@@ -3,6 +3,7 @@ import type { Prisma } from '@prisma/client';
 import { uuidPattern } from '../../shared/http/schemas.js';
 
 export const playlistLimits = { perOwner: 20, entries: 100, name: 60 } as const;
+export const maxPlaylistRevision = 2_147_483_647;
 export const includeEntries = { entries: { orderBy: { position: 'asc' as const } } };
 export type PlaylistRow = Prisma.PlaylistGetPayload<{ include: typeof includeEntries }>;
 export interface Track { source: 'local' | 'remote'; id: string; title: string; artist?: string; library?: string; }

@@ -1,5 +1,5 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
-import { createEntries, includeEntries, moveEntry, normalizeName, playlistLimits,
+import { createEntries, includeEntries, maxPlaylistRevision, moveEntry, normalizeName, playlistLimits,
   PlaylistError, presentPlaylist, type PlaylistRow, type Track } from './model.js';
 
 type Transaction = Prisma.TransactionClient;
@@ -16,6 +16,9 @@ export class PlaylistService {
     action: (tx: Transaction, row: PlaylistRow) => Promise<void>) {
     return this.db.$transaction(async tx => {
       const row = await this.owned(tx, ownerId, id);
+      if (row.revision === revision && revision >= maxPlaylistRevision) {
+        throw new PlaylistError(409, '清單版本已達上限，請另存為新清單後操作；仍可刪除此清單。');
+      }
       // Claim this aggregate version before changing entries. Any later error rolls back the claim.
       const changed = await tx.playlist.updateMany({ where: { id, ownerId, revision }, data: { revision: { increment: 1 } } });
       if (!changed.count) throw new PlaylistError(409, '清單已更新，請重新讀取後操作。');

@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import { buildApp } from '../src/app.js';
 import { connectDatabase } from '../src/infrastructure/database.js';
+import { maxPlaylistRevision } from '../src/modules/playlists/model.js';
 const token = 'playback-fixture-token-012345678901234567890';
 const user = '123456789012345678', other = '223456789012345678';
 const headers = (owner = user) => ({ authorization: `Bearer ${token}`, 'x-discord-user-id': owner });
@@ -82,6 +83,44 @@ test('CAS rejects simultaneous edits from separate clients and stale deletion', 
     assert.equal((await app.inject({ method: 'DELETE', url: `/v1/playlists/${p.id}`, headers: headers(), payload: { revision: p.revision } })).statusCode, 409);
   } finally { await secondApp.close(); await secondDb.$disconnect(); }
 });
+test('the last valid revision increment remains readable and deletable without overflowing', async () => {
+  const p = await create('revision boundary', user, [local, remote]);
+  const path = `/v1/playlists/${p.id}`;
+  await db.playlist.update({ where: { id: p.id }, data: { revision: maxPlaylistRevision - 1 } });
+  const last = await app.inject({ method: 'PATCH', url: path, headers: headers(),
+    payload: { revision: maxPlaylistRevision - 1, name: 'last valid edit' } });
+  assert.equal(last.statusCode, 200, last.body);
+  const snapshot = last.json();
+  assert.equal(snapshot.revision, maxPlaylistRevision);
+  for (const [method, url, payload] of [
+    ['PATCH', path, { revision: maxPlaylistRevision, name: 'overflow' }],
+    ['POST', `${path}/entries`, { revision: maxPlaylistRevision, tracks: [local] }],
+    ['PATCH', `${path}/entries/${p.entries[0].entryId}`, { revision: maxPlaylistRevision, position: 2 }],
+    ['DELETE', `${path}/entries/${p.entries[0].entryId}`, { revision: maxPlaylistRevision }],
+  ] as const) {
+    const result = await app.inject({ method, url, headers: headers(), payload });
+    assert.equal(result.statusCode, 409, result.body);
+    assert.match(result.json().error, /版本已達上限/);
+    assert.deepEqual((await app.inject({ url: path, headers: headers() })).json(), snapshot);
+  }
+  // Invalid revisions, stale writes and other owners must still be rejected.
+  assert.equal((await app.inject({ method: 'PATCH', url: path, headers: headers(),
+    payload: { revision: maxPlaylistRevision + 1, name: 'invalid' } })).statusCode, 400);
+  const stale = await app.inject({ method: 'PATCH', url: path, headers: headers(),
+    payload: { revision: maxPlaylistRevision - 1, name: 'stale' } });
+  assert.equal(stale.statusCode, 409); assert.match(stale.json().error, /清單已更新/);
+  assert.equal((await app.inject({ method: 'DELETE', url: path, headers: headers(other),
+    payload: { revision: maxPlaylistRevision } })).statusCode, 404);
+  assert.equal((await app.inject({ method: 'DELETE', url: path, headers: headers(),
+    payload: { revision: maxPlaylistRevision - 1 } })).statusCode, 409);
+  const songCount = await db.song.count();
+  const deleted = await app.inject({ method: 'DELETE', url: path, headers: headers(),
+    payload: { revision: maxPlaylistRevision } });
+  assert.equal(deleted.statusCode, 204, deleted.body);
+  assert.equal(await db.playlist.findUnique({ where: { id: p.id } }), null);
+  assert.equal(await db.playlistEntry.count({ where: { playlistId: p.id } }), 0);
+  assert.equal(await db.song.count(), songCount);
+});
 test('name normalization, schema and track validation reject invalid writes atomically', async () => {
   const p = await create('ＭｉｘName');
   const duplicate = await app.inject({ method: 'POST', url: '/v1/playlists', headers: headers(), payload: { name: ' mixname ' } });
@@ -152,6 +191,7 @@ test('removing import metadata preserves existing playlists, entries and revisio
       VALUES (${entryId}, ${id}, 0, 'local', 'song', 'existing song')`;
     await connection.$disconnect();
     deploy('prisma/schema.prisma');
+    await connection.$connect();
     const p = await connection.playlist.findUniqueOrThrow({ where: { id }, include: { entries: true } });
     assert.equal(p.ownerId, user); assert.equal(p.revision, 7);
     assert.equal(p.entries[0]?.entryId, entryId);

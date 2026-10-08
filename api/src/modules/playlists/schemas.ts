@@ -1,7 +1,7 @@
 import { boundedString, idParams, objectSchema, uuidPattern } from '../../shared/http/schemas.js';
-import { playlistLimits } from './model.js';
+import { maxPlaylistRevision, playlistLimits } from './model.js';
 export { idParams };
-export const revisionSchema = { type: 'integer', minimum: 1, maximum: 2147483646 };
+export const revisionSchema = { type: 'integer', minimum: 1, maximum: maxPlaylistRevision };
 const trackSchema = objectSchema({ source: { enum: ['local', 'remote'] }, id: boundedString(128),
   title: boundedString(500), artist: boundedString(500), library: boundedString(2048) }, ['source', 'id', 'title']);
 const tracksSchema = { type: 'array', maxItems: playlistLimits.entries, items: trackSchema };
