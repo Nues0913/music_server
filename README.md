@@ -281,7 +281,7 @@ Server 的 `PLAYLIST_BOT_TOKEN` 是獨立的受信任 Bot 服務金鑰，至少 
 **資料保存與曲目異動**
 
 - 本服務保存遠端音檔、曲目索引及所有個人清單。清單存於 SQLite 的 `playlists`／`playlist_entries`，需持久掛載並備份目前部署模式的 DB 目錄。清單以 Discord 使用者 ID 歸屬，每人最多 20 份、每份 100 首。刪除清單只刪收藏項目，不刪音檔或歌曲資料。
-- Bot 必須完整設定清單 API 才能使用清單功能；設定缺少、不完整或服務故障時會回報錯誤。Bot 不保存清單 JSON，舊 JSON 僅供一次性匯入。
+- Bot 必須完整設定清單 API 才能使用清單功能；設定缺少、不完整或服務故障時會回報錯誤。所有清單操作都經由 API 存取資料庫。
 - Bot 的清單保存遠端曲目 ID 與 API 網址，播放前重新查詢歌曲。停用或移除曲目後，Bot 會略過無法取得的歌曲並回報，原收藏仍保留；全部無法取得時不開始播放。
 - 更換本服務的對外 API 網址後，需在 Bot 重新加入受影響的遠端收藏；還原本服務資料時請保留曲目 ID。
 - `stream` 模式邊接收邊播放；指定秒數跳轉需重新讀取並解碼到目標位置，受 Bot 載入逾時限制。慢速網路可選 `download`，先下載並驗證大小及 SHA-256 後播放。
@@ -302,23 +302,21 @@ Server 的 `PLAYLIST_BOT_TOKEN` 是獨立的受信任 Bot 服務金鑰，至少 
 | `POST /v1/playlists/:id/entries` | `{tracks, revision}`，整批加入歌曲 |
 | `PATCH /v1/playlists/:id/entries/:entryId` | `{position, revision}`，移到從 1 起算的位置 |
 | `DELETE /v1/playlists/:id/entries/:entryId` | `{revision}`，移除指定項目 |
-| `PUT /v1/playlists/:id/import` | `{name, revision, entries}`，保留舊 ID 的可重跑匯入 |
 
-`Playlist` 包含 `id`、`ownerId`、`name`、`revision`、依序排列的 `entries`。`Track` 包含 `source: local|remote`、`id`、`title`、選用 `artist`；遠端曲目另須 `library`（原 API 網址）。`entries` 比 `Track` 多出獨立的 UUID `entryId`，因此重複收藏同一歌曲仍可分別排序及移除。標題／演出者最多 500 字，清單名稱正規化後為 1–60 字；同一使用者不可使用重複名稱。新增／匯入請求上限 512 KiB，不接受音檔、磁碟路徑或金鑰作為收藏資料。
+`Playlist` 包含 `id`、`ownerId`、`name`、`revision`、依序排列的 `entries`。`Track` 包含 `source: local|remote`、`id`、`title`、選用 `artist`；遠端曲目另須 `library`（原 API 網址）。`entries` 比 `Track` 多出獨立的 UUID `entryId`，因此重複收藏同一歌曲仍可分別排序及移除。標題／演出者最多 500 字，清單名稱正規化後為 1–60 字；同一使用者不可使用重複名稱。新增清單／加入歌曲請求上限 512 KiB，不接受音檔、磁碟路徑或金鑰作為收藏資料。
 
-修改前請先讀取清單，提交回傳的 `revision`。版本過期時整個 transaction 會回滾，請重新讀取後由使用者確認操作，勿自動覆蓋。匯入時保留清單 ID、項目 ID 與原版本；相同來源內容重跑會回傳現有資料，不會覆蓋匯入後的編輯，來源內容衝突則回傳 409。
+修改前請先讀取清單，提交回傳的 `revision`。版本過期時整個 transaction 會回滾，請重新讀取後由使用者確認操作，勿自動覆蓋。
 
 升級步驟：
 
-1. 備份現有 SQLite 與 Bot 的 `data/playlists.json`；暫停 Bot 的清單寫入。
-2. 更新 Server 並執行 `bash scripts/setup.sh`。本機從 `api/` 執行 `npm ci && npm run db:generate && npm run db:migrate && npm run build` 並重新啟動 Server；Docker 執行 `docker compose up -d --build`，啟動時自動套用新增資料表的 migration，保留既有 `songs`。
+1. 備份現有 SQLite；暫停 Bot 的清單寫入。
+2. 更新 Server 並執行 `bash scripts/setup.sh`。本機從 `api/` 執行 `npm ci && npm run db:generate && npm run db:migrate && npm run build` 並重新啟動 Server；Docker 執行 `docker compose up -d --build`，啟動時自動套用 migration，保留既有歌曲與清單。移除清單匯入功能的 migration 僅刪除已停用的匯入摘要欄位，不刪除清單或歌曲。
 3. 安全地設定 Bot 的 `PLAYLIST_API_URL`、`PLAYLIST_API_TOKEN`（Server 的專用 Bot 金鑰），更新並建置 Bot。
-4. 若已有本地 JSON 清單，在 Bot 根目錄執行 `node scripts/import-playlists.mjs data/playlists.json`。原檔不會刪除／覆寫；中途失敗可修正問題後用同一檔案重跑。未啟用新版 API 時匯入會失敗，勿先移除備份。
-5. 重新啟動 Bot，驗證 `/playlist list`、新增、排序及播放；跨主機部署須確認 Nginx 入口可用。
+4. 重新啟動 Bot，驗證 `/playlist list`、新增、排序及播放；跨主機部署須確認 Nginx 入口可用。
 
 若 Prisma 回報空白的 `Schema engine error`，請檢查執行環境是否帶入了限制過嚴的 `RUST_LOG`；可使用 `RUST_LOG=info npm run db:migrate`。Prisma CLI 與 Client 固定使用 6.19.3。
 
-`npm test` 會在暫存 SQLite 驗證原歌曲 API 與清單權限、CRUD、容量、版本競態、持久化和匯入。兩個專案完成建置後，可在 Bot 根目錄執行 `node scripts/test-playlist-server.mjs ../music_server/api`，以真實 HTTP 與 SQLite 驗證跨專案流程，不會修改正式資料。
+`npm test` 會在暫存 SQLite 驗證原歌曲 API 與清單權限、CRUD、容量、版本競態、持久化。兩個專案完成建置後，可在 Bot 根目錄執行 `node scripts/test-playlist-server.mjs ../music_server/api`，以真實 HTTP 與 SQLite 驗證跨專案流程，不會修改正式資料。
 
 ## 環境變數
 

@@ -34,7 +34,6 @@ model Playlist {
   name       String
   nameKey    String          @map("name_key")
   revision   Int             @default(1)
-  importHash String?         @map("import_hash")
   entries    PlaylistEntry[]
 
   @@unique([ownerId, nameKey])

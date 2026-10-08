@@ -10,14 +10,12 @@ const trackProperties = {
   source: { enum: ['local', 'remote'] }, id: string(128), title: string(500), artist: string(500), library: string(2048),
 };
 const trackSchema = object(trackProperties, ['source', 'id', 'title']);
-const entrySchema = object({ ...trackProperties, entryId: { type: 'string', pattern: uuid } }, ['source', 'id', 'title', 'entryId']);
 const tracksSchema = { type: 'array', maxItems: 100, items: trackSchema };
 const idParams = object({ id: { type: 'string', pattern: uuid } });
 const entryParams = object({ id: { type: 'string', pattern: uuid }, entryId: { type: 'string', pattern: uuid } });
 const includeEntries = { entries: { orderBy: { position: 'asc' as const } } };
 type Row = Prisma.PlaylistGetPayload<{ include: typeof includeEntries }>;
-interface Track { source: 'local' | 'remote'; id: string; title: string; artist?: string; library?: string; entryId?: string; }
-interface ImportBody { name: string; revision: number; entries: (Track & { entryId: string })[]; }
+interface Track { source: 'local' | 'remote'; id: string; title: string; artist?: string; library?: string;  }
 class PlaylistError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -38,7 +36,7 @@ function entries(tracks: Track[], offset = 0) {
         throw new PlaylistError(400, '曲庫網址不可包含憑證、查詢參數或片段。');
       }
     }
-    return { entryId: track.entryId ?? randomUUID(), position: offset + index,
+    return { entryId: randomUUID(), position: offset + index,
       source: track.source, trackId: track.id, title: track.title, artist: track.artist, library: track.library };
   });
 }
@@ -138,21 +136,4 @@ export function registerPlaylists(app: FastifyInstance, db: PrismaClient, token:
     const [entry] = row.entries.splice(index, 1); row.entries.splice(request.body.position - 1, 0, entry!);
     for (const [position, item] of row.entries.entries()) await tx.playlistEntry.update({ where: { entryId: item.entryId }, data: { position } });
   }));
-  app.put<{ Params: { id: string }; Body: ImportBody }>('/playlists/:id/import', {
-    bodyLimit: 512 * 1024, schema: { params: idParams, body: object({ name: string(60), revision: revisionSchema, entries: { type: 'array', maxItems: 100, items: entrySchema } }) },
-  }, async request => {
-    const data = name(request.body.name), items = entries(request.body.entries);
-    const hash = createHash('sha256').update(JSON.stringify({ ...data, revision: request.body.revision, items })).digest('hex');
-    return db.$transaction(async tx => {
-      const existing = await tx.playlist.findUnique({ where: { id: request.params.id }, include: includeEntries });
-      if (existing) {
-        if (existing.ownerId !== owner(request)) throw new PlaylistError(404, '找不到你的播放清單。');
-        if (existing.importHash !== hash) throw new PlaylistError(409, '此 ID 已存在，匯入未覆寫資料。');
-        return present(existing);
-      }
-      await quota(tx, owner(request));
-      return present(await tx.playlist.create({ data: { id: request.params.id, ownerId: owner(request), ...data,
-        revision: request.body.revision, importHash: hash, entries: { create: items } }, include: includeEntries }));
-    });
-  });
 }

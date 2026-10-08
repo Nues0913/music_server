@@ -1,7 +1,7 @@
 import { before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, cp, mkdir, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -48,7 +48,6 @@ test('every playlist and entry mutation enforces owner scope', async () => {
     ['POST', `${path}/entries`, { tracks: [local], revision: 1 }],
     ['PATCH', `${path}/entries/${p.entries[0].entryId}`, { position: 1, revision: 1 }],
     ['DELETE', `${path}/entries/${p.entries[0].entryId}`, { revision: 1 }],
-    ['PUT', `${path}/import`, { name: 'steal', revision: 1, entries: [] }],
   ] as const) {
     const response = await app.inject({ method, url, headers: headers(other), ...(payload ? { payload } : {}) });
     assert.equal(response.statusCode, 404, response.body);
@@ -69,7 +68,7 @@ test('mixed duplicate entries keep stable IDs through add, move, remove and rena
   assert.equal(p.entries.length, 3);
   p = (await app.inject({ method: 'PATCH', url: path, headers: headers(), payload: { revision: p.revision, name: 'new name' } })).json();
   assert.equal(p.name, 'new name'); assert.equal(p.revision, 5);
-  assert.equal(p.nameKey, undefined); assert.equal(p.importHash, undefined); assert.equal(p.entries[0].playlistId, undefined);
+  assert.equal(p.nameKey, undefined); assert.equal(p.entries[0].playlistId, undefined);
 });
 test('CAS rejects simultaneous edits from separate clients and stale deletion', async () => {
   const p = await create('race');
@@ -104,15 +103,12 @@ test('100-song batch capacity and 20-playlist per-user capacity do not partially
   assert.equal((await app.inject({ method: 'POST', url: '/v1/playlists', headers: headers(owner), payload: { name: 'too many' } })).statusCode, 409);
   await create('other quota', '423456789012345678');
 });
-test('import preserves IDs and revision, retries do not duplicate or overwrite later edits', async () => {
-  const id = randomUUID(), entryId = randomUUID();
-  const url = `/v1/playlists/${id}/import`, payload = { name: 'legacy', revision: 7, entries: [{ ...local, entryId }] };
-  const imported = await app.inject({ method: 'PUT', url, headers: headers(), payload });
-  assert.equal(imported.statusCode, 200, imported.body); assert.equal(imported.json().revision, 7); assert.equal(imported.json().entries[0].entryId, entryId);
-  await app.inject({ method: 'PATCH', url: `/v1/playlists/${id}`, headers: headers(), payload: { name: 'edited later', revision: 7 } });
-  const retry = await app.inject({ method: 'PUT', url, headers: headers(), payload });
-  assert.equal(retry.statusCode, 200); assert.equal(retry.json().name, 'edited later'); assert.equal(retry.json().revision, 8);
-  assert.equal((await app.inject({ method: 'PUT', url, headers: headers(), payload: { ...payload, name: 'changed input' } })).statusCode, 409);
+test('removed playlist import route cannot create or overwrite database records', async () => {
+  const count = await db.playlist.count();
+  const response = await app.inject({ method: 'PUT', url: `/v1/playlists/${randomUUID()}/import`,
+    headers: headers(), payload: { name: 'unsupported', revision: 1, entries: [] } });
+  assert.equal(response.statusCode, 404);
+  assert.equal(await db.playlist.count(), count);
 });
 test('database persistence survives reopening and delete cascades only playlist entries', async () => {
   const p = await create('persist', user, [local, remote]);
@@ -130,4 +126,34 @@ test('config rejects reused playlist credentials', () => {
     process.env.PLAYLIST_BOT_TOKEN = process.env.API_TOKEN;
     assert.throws(() => playlistBotToken());
   } finally { if (previous === undefined) delete process.env.PLAYLIST_BOT_TOKEN; else process.env.PLAYLIST_BOT_TOKEN = previous; }
+});
+
+test('removing import metadata preserves existing playlists, entries and revisions', async () => {
+  const legacySchema = join(root, 'previous-schema');
+  await mkdir(join(legacySchema, 'migrations'), { recursive: true });
+  await cp('prisma/schema.prisma', join(legacySchema, 'schema.prisma'));
+  for (const migration of await readdir('prisma/migrations')) {
+    if (migration === '20261008000000_remove_playlist_import') continue;
+    await cp(join('prisma/migrations', migration), join(legacySchema, 'migrations', migration), { recursive: true });
+  }
+  const upgradeUrl = `file:${join(root, 'upgrade.sqlite')}`;
+  const deploy = (schema: string) => execFileSync(process.execPath,
+    ['node_modules/prisma/build/index.js', 'migrate', 'deploy', '--schema', schema],
+    { env: { ...process.env, DATABASE_URL: upgradeUrl, RUST_LOG: 'info' }, stdio: 'pipe' });
+  deploy(join(legacySchema, 'schema.prisma'));
+  const connection = await connectDatabase(upgradeUrl);
+  const id = randomUUID(), entryId = randomUUID();
+  try {
+    await connection.$executeRaw`INSERT INTO playlists (id, owner_id, name, name_key, revision, import_hash)
+      VALUES (${id}, ${user}, 'existing', 'existing', 7, 'obsolete-metadata')`;
+    await connection.$executeRaw`INSERT INTO playlist_entries (entry_id, playlist_id, position, source, track_id, title)
+      VALUES (${entryId}, ${id}, 0, 'local', 'song', 'existing song')`;
+    await connection.$disconnect();
+    deploy('prisma/schema.prisma');
+    const p = await connection.playlist.findUniqueOrThrow({ where: { id }, include: { entries: true } });
+    assert.equal(p.ownerId, user); assert.equal(p.revision, 7);
+    assert.equal(p.entries[0]?.entryId, entryId);
+    const columns = await connection.$queryRaw<{ name: string }[]>`PRAGMA table_info('playlists')`;
+    assert.ok(!columns.some(column => column.name === 'import_hash'));
+  } finally { await connection.$disconnect(); }
 });
