@@ -103,6 +103,36 @@ test('an old file progress event cannot overwrite the next file status or final 
   complete(song()); await pending;
   const finalCount = f.calls.length; progress[1](80); assert.equal(f.calls.length, finalCount);
 });
+
+test('429 retries the same file with a bounded wait while cancellation interrupts the wait immediately', async () => {
+  const names: string[] = [];
+  const f = fixture(values => {
+    names.push(values.file.name);
+    return { done: names.length === 1 ? Promise.reject(Object.assign(new Error('limited'), { status: 429, retryAfter: '1' }))
+      : Promise.resolve(song()), abort() {} };
+  });
+  await f.controller.initialize(); f.select(['first.wav', 'second.wav']); await f.controller.submit();
+  assert.deepEqual(names, ['first.wav', 'first.wav', 'second.wav']);
+  assert.deepEqual(f.entries().map(entry => entry.state), ['imported', 'imported']);
+  for (const dispose of [false, true]) {
+    let requests = 0;
+    const cancelled = fixture(() => { requests++; return { done: Promise.reject(Object.assign(new Error('limited'), { status: 429, retryAfter: '300' })), abort() {} }; });
+    await cancelled.controller.initialize(); cancelled.select(['first.wav', 'second.wav']);
+    const pending = cancelled.controller.submit(); await new Promise(resolve => setImmediate(resolve));
+    const start = Date.now();
+    if (dispose) cancelled.controller.dispose(); else cancelled.controller.cancel();
+    await pending;
+    assert.ok(Date.now() - start < 500); assert.equal(requests, 1);
+    assert.equal(cancelled.controller.isBusy(), false);
+  }
+});
+
+test('persistent 429 exhausts retries and stops the batch instead of flooding remaining files', async () => {
+  let requests = 0;
+  const f = fixture(() => { requests++; return { done: Promise.reject(Object.assign(new Error('limited'), { status: 429 })), abort() {} }; });
+  await f.controller.initialize(); f.select(['first.wav', 'second.wav']); await f.controller.submit();
+  assert.equal(requests, 3); assert.deepEqual(f.entries().map(entry => entry.state), ['failed', 'pending']);
+});
 test('upload transport trims metadata, bounds progress and exposes HTTP failures including malformed error bodies', async () => {
   let xhr: any; const fields: [string, unknown][] = [], percentages: number[] = [];
   class FakeXHR {

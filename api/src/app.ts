@@ -21,6 +21,10 @@ export function buildApp(options: AppOptions) {
   });
   app.setErrorHandler((error: FastifyError, request, reply) => {
     if (error.validation) return reply.code(400).send({ error: 'Invalid request', details: error.validation });
+    if (error.statusCode && error.statusCode >= 400 && error.statusCode < 500) {
+      request.log.info({ status: error.statusCode, code: error.code }, 'Request rejected');
+      return reply.code(error.statusCode).send({ error: error.statusCode === 413 ? 'Request too large' : 'Invalid request' });
+    }
     request.log.error({ err: error }, 'Request failed');
     return reply.code(503).send({ error: 'Service temporarily unavailable' });
   });

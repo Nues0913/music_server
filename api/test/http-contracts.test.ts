@@ -11,7 +11,8 @@ import { registerSongs } from '../src/modules/songs/routes.js';
 import { registerUpload } from '../src/modules/uploads/routes.js';
 import { createEntries, PlaylistError } from '../src/modules/playlists/model.js';
 import { SongError } from '../src/modules/songs/service.js';
-import { UploadError } from '../src/modules/uploads/errors.js';
+import { UploadError, uploadFailure } from '../src/modules/uploads/errors.js';
+import { InvalidAudioError, CapacityError } from '../src/storage/errors.js';
 import type { PlaylistService } from '../src/modules/playlists/service.js';
 import type { SongService } from '../src/modules/songs/service.js';
 const token = 'contract-fixture-token-012345678901234567890';
@@ -104,4 +105,22 @@ test('upload boundary rejects missing admin credential and exposes busy retry wi
   assert.equal((await app.inject({ method: 'POST', url: '/v1/songs', headers, payload: 'not multipart' })).statusCode, 415);
   const result = await app.inject({ method: 'POST', url: '/v1/songs', headers: { ...headers, 'content-type': 'multipart/form-data; boundary=fixture' }, payload: '--fixture--\r\n' });
   assert.equal(result.statusCode, 409); assert.equal(result.headers['retry-after'], '5'); assert.equal(uploads, 1);
+});
+
+test('input errors remain 4xx while unknown upload/DB failures are sanitized service errors', async t => {
+  const app = buildApp({ db: {} as PrismaClient, token, audioRoot: '/unused',
+    upload: { adminToken: token, maxBytes: 1000, minFreeBytes: 1, quotaBytes: 1000 } });
+  t.after(() => app.close());
+  const result = await app.inject({ method: 'POST', url: '/v1/songs', headers: { ...headers, 'content-type': 'application/json' }, payload: '{' });
+  assert.equal(result.statusCode, 400);
+  assert.equal(uploadFailure(new InvalidAudioError('bad stream')).status, 400);
+  assert.equal(uploadFailure(new CapacityError('full')).status, 507);
+  const internal = uploadFailure(new Error('DB unavailable with private details'));
+  assert.equal(internal.status, 503); assert.doesNotMatch(internal.error, /private details/);
+  const boundary = Fastify();
+  await registerUpload(boundary, { async upload() { throw new Error('private database error'); } },
+    { adminToken: token, maxBytes: 1000, minFreeBytes: 1, quotaBytes: 1000 });
+  t.after(() => boundary.close());
+  const failure = await boundary.inject({ method: 'POST', url: '/v1/songs', headers: { ...headers, 'content-type': 'multipart/form-data; boundary=fixture' }, payload: '--fixture--\r\n' });
+  assert.equal(failure.statusCode, 503); assert.doesNotMatch(failure.body, /private database error/);
 });

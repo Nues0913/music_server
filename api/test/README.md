@@ -15,6 +15,16 @@ npm test
 
 ## 經 Nginx 測試
 
+隔離契約回歸測試需要 Docker（`nginx:1.30-alpine`），從 `api/` 執行：
+
+```bash
+npm run test:nginx-contracts
+# 先建置 Bot 後，可一起驗證真正的遠端清單解析：
+npm run test:nginx-contracts -- ../../Cirno_Discord_Bot
+```
+
+測試使用暫存 SQLite、合成音檔、測試金鑰與獨立容器／網路，結束後清除。涵蓋 host alias、512 KiB 清單限制、100 首 JSON、私有音檔邊界、30 檔批次限流重試，以及 Compose service 換 IP 後的 DNS 更新。指定 Bot 路徑時，另測 100 個重複項目與 100 首不同有效歌曲，不登入 Discord。不能與 Bot 的建置／`npm test` 同時執行，避免 dist 被清除。
+
 先依根目錄 README 啟動 Linux API 與一個 Nginx 入口：
 
 ```bash

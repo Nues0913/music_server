@@ -14,7 +14,9 @@ export async function registerUpload(app: FastifyInstance, service: Pick<UploadS
       return reply.code(result.status).send(result.body);
     } catch (error) {
       const failure = uploadFailure(error);
-      if (failure.unexpected) request.log.warn({ err: error }, 'Upload failed');
+      if (failure.unexpected) request.log.error({ err: error }, 'Upload failed');
+      else if (failure.status === 507) request.log.warn({ status: failure.status }, 'Upload capacity exhausted');
+      else request.log.info({ status: failure.status }, 'Upload rejected');
       if (failure.retryAfter) reply.header('Retry-After', failure.retryAfter);
       return reply.code(failure.status).send({ error: failure.error });
     }

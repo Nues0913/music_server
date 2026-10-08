@@ -3,6 +3,14 @@ import { fileError } from './validation.js';
 export function createUploadController(view, client) {
   let maxBytes = 0, enabled = false, active, disposed = false, requestId = 0;
   let entries = [], nextId = 0, running = false, cancelled = false;
+  let cancelWait;
+  function waitForRetry(ms) {
+    return new Promise((resolve, reject) => {
+      const cancel = () => { clearTimeout(timer); reject(Object.assign(new Error('已取消批次。'), { cancelled: true })); };
+      const timer = setTimeout(() => { cancelWait = undefined; resolve(); }, ms);
+      cancelWait = cancel;
+    });
+  }
   const finished = entry => entry.state === 'imported' || entry.state === 'duplicate';
   function renderSelection() {
     view.selected(entries); view.renderEntries(entries); view.busy(false, enabled);
@@ -42,20 +50,35 @@ export function createUploadController(view, client) {
     try {
       for (const [index, entry] of jobs.entries()) {
         if (cancelled || disposed) break;
-        const currentRequest = ++requestId;
         entry.state = 'uploading'; entry.progress = 0; entry.error = undefined;
         view.entry(entry); view.message(`正在上傳 ${index + 1}/${jobs.length}：${entry.name}`);
         try {
-          active = client.upload({ file: entry.file, title: entry.title, artist: entry.artist, token,
-            onProgress(percent) {
-              if (disposed || currentRequest !== requestId || entry.state !== 'uploading') return;
-              entry.progress = percent; view.entry(entry);
-              view.progress(Math.round((index + percent / 100) / jobs.length * 100));
-              view.message(percent === 100 ? `傳送完成，正在驗證 ${index + 1}/${jobs.length}：${entry.name}`
-                : `正在上傳 ${index + 1}/${jobs.length}：${entry.name}（${percent}%）`);
-            },
-          });
-          const result = await active.done;
+          let result;
+          for (let attempt = 0; ; attempt++) {
+            if (cancelled || disposed) throw Object.assign(new Error('已取消批次。'), { cancelled: true });
+            const currentRequest = ++requestId;
+            active = client.upload({ file: entry.file, title: entry.title, artist: entry.artist, token,
+              onProgress(percent) {
+                if (disposed || currentRequest !== requestId || entry.state !== 'uploading') return;
+                entry.progress = percent; view.entry(entry);
+                view.progress(Math.round((index + percent / 100) / jobs.length * 100));
+                view.message(percent === 100 ? `傳送完成，正在驗證 ${index + 1}/${jobs.length}：${entry.name}`
+                  : `正在上傳 ${index + 1}/${jobs.length}：${entry.name}（${percent}%）`);
+              },
+            });
+            try { result = await active.done; break; }
+            catch (failure) {
+              // Only retry an explicit rate rejection, never an ambiguous network/write failure.
+              if (failure.status !== 429 || attempt >= 2 || cancelled || disposed) throw failure;
+              requestId++; active = undefined;
+              entry.progress = 0; view.entry(entry);
+              view.message(`伺服器忙碌，稍後重試 ${index + 1}/${jobs.length}：${entry.name}`);
+              const seconds = failure.retryAfter ? Number(failure.retryAfter) : NaN;
+              const requested = Number.isFinite(seconds) ? seconds * 1000
+                : failure.retryAfter ? Date.parse(failure.retryAfter) - Date.now() : 1000;
+              await waitForRetry(Math.min(3000, Math.max(1000, requested || 1000)));
+            }
+          }
           if (disposed) break;
           entry.state = result.status === 'duplicate' ? 'duplicate' : 'imported';
           entry.progress = 100; entry.result = result; entry.file = undefined;
@@ -64,7 +87,7 @@ export function createUploadController(view, client) {
           entry.state = failure.cancelled ? 'cancelled' : 'failed'; entry.error = failure.message;
           if (failure.cancelled) cancelled = true;
           // A bad credential or exhausted storage affects every remaining file.
-          if ([401, 403, 507].includes(failure.status)) { cancelled = true; stoppedByFailure = true; }
+          if ([401, 403, 429, 507].includes(failure.status)) { cancelled = true; stoppedByFailure = true; }
         } finally { requestId++; active = undefined; }
         if (!disposed) { view.entry(entry); view.progress(Math.round((index + 1) / jobs.length * 100)); }
       }
@@ -75,7 +98,7 @@ export function createUploadController(view, client) {
       view.message(`${prefix}：${count('imported')} 首已加入曲庫，${count('duplicate')} 首曲庫已有相同音檔，${failed} 首失敗，${pending} 首未完成。`,
         failed ? 'error' : cancelled ? '' : 'success');
     } finally {
-      requestId++; active = undefined; running = false;
+      requestId++; active = undefined; cancelWait = undefined; running = false;
       if (!disposed) { view.busy(false, enabled); view.hideProgress(); }
     }
   }
@@ -93,8 +116,8 @@ export function createUploadController(view, client) {
     }
   }
   return { initialize, chooseFile, editEntry, removeEntry, submit,
-    cancel() { if (running) { cancelled = true; requestId++; active?.abort(); } },
+    cancel() { if (running) { cancelled = true; requestId++; active?.abort(); cancelWait?.(); } },
     isBusy: () => running,
-    dispose() { disposed = true; cancelled = true; requestId++; active?.abort(); },
+    dispose() { disposed = true; cancelled = true; requestId++; active?.abort(); cancelWait?.(); },
   };
 }

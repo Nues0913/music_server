@@ -19,10 +19,11 @@ export function createUploadClient({ fetch = globalThis.fetch, XMLHttpRequest = 
         };
         xhr.onload = () => {
           let result;
+          const retryAfter = xhr.getResponseHeader?.('Retry-After') ?? undefined;
           try { result = JSON.parse(xhr.responseText); }
-          catch { return reject(Object.assign(new Error(`伺服器回應異常（${xhr.status}），請稍後重試。`), { status: xhr.status })); }
+          catch { return reject(Object.assign(new Error(`伺服器回應異常（${xhr.status}），請稍後重試。`), { status: xhr.status, retryAfter })); }
           if (xhr.status < 200 || xhr.status >= 300) return reject(Object.assign(new Error(
-            typeof result?.error === 'string' ? result.error : '上傳失敗，請稍後重試。'), { status: xhr.status }));
+            typeof result?.error === 'string' ? result.error : '上傳失敗，請稍後重試。'), { status: xhr.status, retryAfter }));
           if (!result?.song || typeof result.song.title !== 'string') return reject(new Error('伺服器回應異常，請稍後重試。'));
           resolve(result);
         };
