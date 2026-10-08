@@ -8,11 +8,9 @@ import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import { buildApp } from '../src/app.js';
 import { connectDatabase } from '../src/infrastructure/database.js';
-import { playlistBotToken } from '../src/config.js';
 const token = 'playback-fixture-token-012345678901234567890';
-const botToken = 'playlist-fixture-token-012345678901234567890';
 const user = '123456789012345678', other = '223456789012345678';
-const headers = (owner = user) => ({ authorization: `Bearer ${botToken}`, 'x-discord-user-id': owner });
+const headers = (owner = user) => ({ authorization: `Bearer ${token}`, 'x-discord-user-id': owner });
 const local = { source: 'local', id: 'local-track-id', title: '本地歌曲' };
 const remote = { source: 'remote', id: '00000000-0000-4000-8000-000000000001', title: '遠端歌曲', library: 'https://music.example/' };
 let root: string, db: PrismaClient, app: ReturnType<typeof buildApp>;
@@ -22,23 +20,25 @@ before(async () => {
   databaseUrl = `file:${join(root, 'db.sqlite')}?connection_limit=1`;
   execFileSync(process.execPath, ['node_modules/prisma/build/index.js', 'migrate', 'deploy'], { env: { ...process.env, DATABASE_URL: databaseUrl, RUST_LOG: 'info' }, stdio: 'pipe' });
   db = await connectDatabase(databaseUrl);
-  app = buildApp({ db, token, playlistToken: botToken, audioRoot: root });
+  app = buildApp({ db, token, audioRoot: root });
 });
 after(async () => { if (app) await app.close(); if (db) await db.$disconnect(); if (root) await rm(root, { recursive: true, force: true }); });
 async function create(name: string, owner = user, tracks: object[] = []) {
   const result = await app.inject({ method: 'POST', url: '/v1/playlists', headers: headers(owner), payload: { name, tracks } });
   assert.equal(result.statusCode, 201, result.body); return result.json();
 }
-test('only the dedicated trusted Bot credential accepts a Discord identity', async () => {
-  for (const h of [{}, { authorization: `Bearer ${token}`, 'x-discord-user-id': user }, { authorization: 'Bearer wrong', 'x-discord-user-id': user }]) {
+test('one API credential authorizes songs and playlists while Discord identity stays required for playlists', async () => {
+  for (const h of [{}, { authorization: 'Bearer wrong', 'x-discord-user-id': user },
+    { authorization: 'Bearer admin-fixture-token-012345678901234567890', 'x-discord-user-id': user }]) {
     assert.equal((await app.inject({ url: '/v1/playlists', headers: h })).statusCode, 401);
+    assert.equal((await app.inject({ url: '/v1/songs', headers: h })).statusCode, 401);
   }
+  const auth = { authorization: `Bearer ${token}` };
+  assert.equal((await app.inject({ url: '/v1/songs', headers: auth })).statusCode, 200);
+  assert.equal((await app.inject({ url: '/v1/playlists', headers: auth })).statusCode, 400);
   for (const id of ['', 'alice', '../123', '1']) assert.equal((await app.inject({ url: '/v1/playlists', headers: headers(id) })).statusCode, 400);
   assert.equal((await app.inject({ url: '/v1/playlists', headers: headers() })).statusCode, 200);
-  assert.equal((await app.inject({ url: '/v1/songs', headers: headers() })).statusCode, 401);
-  const disabled = buildApp({ db, token, audioRoot: root });
-  assert.equal((await disabled.inject({ url: '/v1/playlists', headers: headers() })).statusCode, 404);
-  await disabled.close();
+  assert.equal((await app.inject({ url: '/v1/songs', headers: headers() })).statusCode, 200);
 });
 test('every playlist and entry mutation enforces owner scope', async () => {
   const p = await create('private', user, [local]);
@@ -73,7 +73,7 @@ test('mixed duplicate entries keep stable IDs through add, move, remove and rena
 test('CAS rejects simultaneous edits from separate clients and stale deletion', async () => {
   const p = await create('race');
   const secondDb = await connectDatabase(databaseUrl);
-  const secondApp = buildApp({ db: secondDb, token, playlistToken: botToken, audioRoot: root });
+  const secondApp = buildApp({ db: secondDb, token, audioRoot: root });
   try {
     const requests = await Promise.all([app, secondApp].map(instance => instance.inject({ method: 'POST', url: `/v1/playlists/${p.id}/entries`, headers: headers(), payload: { revision: p.revision, tracks: [local] } })));
     assert.deepEqual(requests.map(r => r.statusCode).sort(), [200, 409]);
@@ -120,12 +120,14 @@ test('database persistence survives reopening and delete cascades only playlist 
   assert.equal(result.statusCode, 204); assert.equal(await db.playlistEntry.count({ where: { playlistId: p.id } }), 0);
   assert.equal(await db.song.count(), songCount);
 });
-test('config rejects reused playlist credentials', () => {
-  const previous = process.env.PLAYLIST_BOT_TOKEN;
-  try {
-    process.env.PLAYLIST_BOT_TOKEN = process.env.API_TOKEN;
-    assert.throws(() => playlistBotToken());
-  } finally { if (previous === undefined) delete process.env.PLAYLIST_BOT_TOKEN; else process.env.PLAYLIST_BOT_TOKEN = previous; }
+test('health checks playlist persistence without a separate credential', async () => {
+  const unavailableDb = {
+    song: { async findFirst() { return null; } },
+    playlist: { async findFirst() { throw new Error('playlist table unavailable'); } },
+  } as unknown as PrismaClient;
+  const unhealthy = buildApp({ db: unavailableDb, token, audioRoot: root });
+  try { assert.equal((await unhealthy.inject('/health')).statusCode, 503); }
+  finally { await unhealthy.close(); }
 });
 
 test('removing import metadata preserves existing playlists, entries and revisions', async () => {

@@ -10,13 +10,10 @@ import { UploadService, type UploadOptions } from './modules/uploads/service.js'
 
 export interface AppOptions {
   db: PrismaClient; token: string; audioRoot: string; logging?: boolean;
-  upload?: UploadOptions; playlistToken?: string;
+  upload?: UploadOptions;
 }
 export function buildApp(options: AppOptions) {
-  const { db, token, audioRoot, playlistToken, upload } = options;
-  if (playlistToken && (playlistToken.length < 32 || playlistToken === token || playlistToken === upload?.adminToken)) {
-    throw new Error('Playlist token must be distinct and at least 32 characters');
-  }
+  const { db, token, audioRoot, upload } = options;
   const app = Fastify({
     logger: options.logging ? { level: process.env.LOG_LEVEL ?? 'info', redact: ['req.headers.authorization'] } : false,
     bodyLimit: 1024, requestTimeout: 900000, connectionTimeout: 60000,
@@ -29,12 +26,12 @@ export function buildApp(options: AppOptions) {
   });
   registerAdmin(app, upload?.maxBytes ?? 256 * 1024 * 1024, Boolean(upload));
   app.register(async scope => registerSongs(scope, new SongService(db, audioRoot), token), { prefix: '/v1' });
-  if (playlistToken) app.register(async scope => registerPlaylists(scope, new PlaylistService(db), playlistToken), { prefix: '/v1' });
+  app.register(async scope => registerPlaylists(scope, new PlaylistService(db), token), { prefix: '/v1' });
   if (upload) app.register(async scope => registerUpload(scope, new UploadService(db, audioRoot, upload), upload));
   app.get('/health', async (_request, reply) => {
     try {
       await db.song.findFirst({ select: { id: true } });
-      if (playlistToken) await db.playlist.findFirst({ select: { id: true } });
+      await db.playlist.findFirst({ select: { id: true } });
       return { status: 'ok' };
     } catch { return reply.code(503).send({ status: 'unavailable' }); }
   });

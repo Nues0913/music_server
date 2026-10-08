@@ -64,10 +64,9 @@ test('playlist reads preserve saved references and revision even when the song a
     playlist: { async findFirst() { return row; }, async findMany() { return [row]; } },
     song: { async findFirst() { return { id: songId, fileKey: `${songId}.wav`, mimeType: 'audio/wav', byteSize: 100 }; } },
   } as unknown as PrismaClient;
-  const songToken = 'song-contract-fixture-token-012345678901234567890';
-  const app = buildApp({ db, token: songToken, playlistToken: token, audioRoot });
+  const app = buildApp({ db, token, audioRoot });
   t.after(() => app.close());
-  const audio = await app.inject({ url: `/v1/songs/${songId}/audio`, headers: { authorization: `Bearer ${songToken}` } });
+  const audio = await app.inject({ url: `/v1/songs/${songId}/audio`, headers: { authorization: `Bearer ${token}` } });
   assert.equal(audio.statusCode, 404);
   assert.deepEqual(audio.json(), { error: 'Audio unavailable' });
   const expectedEntries = tracks.map((track, index) => ({ ...track, entryId: row.entries[index]!.entryId }));

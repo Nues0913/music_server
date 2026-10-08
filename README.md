@@ -192,7 +192,7 @@ API_UPSTREAM=host.docker.internal:3000 MUSIC_DATA_ROOT=./data \
 
 ## 上傳、匯入與停用
 
-開啟 `/admin`，輸入 **ADMIN_TOKEN**，選擇音檔後上傳。金鑰位於目前模式的 `.env`；**API_TOKEN** 供搜尋／播放使用，兩個金鑰須不同且至少 32 字元。
+開啟 `/admin`，輸入 **ADMIN_TOKEN**，選擇音檔後上傳。金鑰位於目前模式的 `.env`；**API_TOKEN** 供搜尋、播放及清單管理使用，兩個金鑰須不同且至少 32 字元。
 
 每次上傳一首，預設上限 256 MiB，支援取消、metadata 與去重；金鑰不存入瀏覽器儲存空間。留空的 title／artist 沿用音檔標籤或原始檔名。
 
@@ -218,7 +218,7 @@ docker compose exec api node dist/cli.js enable <song-id>
 
 ## API
 
-搜尋／播放使用 `Authorization: Bearer <API_TOKEN>`；上傳使用 `Authorization: Bearer <ADMIN_TOKEN>`。回傳 JSON 使用 camelCase，不包含私有 fileKey／磁碟路徑。
+搜尋、播放及清單管理使用 `Authorization: Bearer <API_TOKEN>`；上傳使用 `Authorization: Bearer <ADMIN_TOKEN>`。回傳 JSON 使用 camelCase，不包含私有 fileKey／磁碟路徑。
 
 | API | 用途 |
 | --- | --- |
@@ -250,14 +250,11 @@ REMOTE_MUSIC_API_URL=https://music.example.com/
 REMOTE_MUSIC_API_TOKEN=your_music_server_api_token
 REMOTE_MUSIC_MODE=stream
 REMOTE_MUSIC_BUFFER_SECONDS=3
-# 個人播放清單儲存於本服務
-PLAYLIST_API_URL=https://music.example.com/
-PLAYLIST_API_TOKEN=your_dedicated_playlist_bot_token
 ```
 
 `REMOTE_MUSIC_API_URL` 必須是可以串流音檔的 **Nginx 入口**。使用本機 Docker Compose 的預設 HTTP 埠時，同一主機的 Bot 可使用 `http://127.0.0.1/`；若已調整主機發布埠，須一起調整網址。不同主機的 Bot 請使用可連通的 HTTPS 網址。直接連 Fastify 的 `3000` 埠只能取得 `X-Accel-Redirect`，無法播放音檔。
 
-`REMOTE_MUSIC_API_TOKEN` 使用目前部署模式的 `API_TOKEN`，不要使用管理上傳的 `ADMIN_TOKEN`。Docker 模式的金鑰在根目錄 `.env`，本機 API 模式則在 `api/.env`；兩份既有設定不會自動同步。請透過安全的環境設定將金鑰提供給 Bot，不要提交金鑰到 Git。
+歌曲與個人清單共用 `REMOTE_MUSIC_API_URL`、`REMOTE_MUSIC_API_TOKEN`；Token 使用目前部署模式的 `API_TOKEN`，上傳管理使用另外的 `ADMIN_TOKEN`。Docker 模式的金鑰在根目錄 `.env`，本機 API 模式則在 `api/.env`；兩份既有設定不會自動同步。請透過安全的環境設定將金鑰提供給 Bot，不要提交金鑰到 Git。
 
 Bot 端的常用操作：
 
@@ -274,14 +271,16 @@ Bot 端的常用操作：
 
 **清單服務驗證**
 
-Server 的 `PLAYLIST_BOT_TOKEN` 是獨立的受信任 Bot 服務金鑰，至少 32 字元，須與 `API_TOKEN`、`ADMIN_TOKEN` 不同。`scripts/setup.sh` 會為缺少此設定的安裝產生隨機值；既有值及明確留空的設定會保留。將它安全地提供給 Bot 的 `PLAYLIST_API_TOKEN`，並設定 `PLAYLIST_API_URL`，Bot 的所有清單管理必須透過 Server API，清單一律由 Server SQLite 儲存。留空 `PLAYLIST_BOT_TOKEN` 會停用清單 API；歌曲 API 照常運作。
+清單 API 與歌曲 API 共用 Server 的 `API_TOKEN`，不需另外啟用或產生清單金鑰。Bot 只需設定 `REMOTE_MUSIC_API_URL` 和 `REMOTE_MUSIC_API_TOKEN`；所有清單管理透過同一個 Server API，清單一律由 Server SQLite 儲存。
 
-每個清單 API 請求使用 `Authorization: Bearer <PLAYLIST_BOT_TOKEN>` 與 `X-Discord-User-Id`。Bot 必須從 Discord interaction 的 `user.id` 取得身分，不可接受使用者自行輸入他人的 ID。Server 驗證服務金鑰後，以該使用者 ID 限定所有查詢及修改；一般播放／上傳金鑰無法存取清單。這是 Bot 到 Server 的受信任服務介面，不是供瀏覽器或一般使用者持金鑰呼叫的公開登入 API；勿將此金鑰交給 Discord 使用者。跨主機連線請使用 HTTPS。
+每個清單 API 請求使用 `Authorization: Bearer <API_TOKEN>` 與 `X-Discord-User-Id`。Bot 必須從 Discord interaction 的 `user.id` 取得身分，不可接受使用者自行輸入他人的 ID。Server 驗證 API 金鑰後，以該使用者 ID 限定所有查詢及修改。此金鑰授權受信任的 Bot 讀取歌曲及管理使用者清單，請保存在服務端，不要交給 Discord 使用者或放入瀏覽器；跨主機連線請使用 HTTPS。上傳仍需獨立的 `ADMIN_TOKEN`。
+
+舊的 `PLAYLIST_API_URL`、`PLAYLIST_API_TOKEN` 和 `PLAYLIST_BOT_TOKEN` 已停用，可從環境設定移除。既有 `API_TOKEN` 與資料庫沿用，升級不需更換金鑰或搬移清單。
 
 **資料保存與曲目異動**
 
 - 本服務保存遠端音檔、曲目索引及所有個人清單。清單存於 SQLite 的 `playlists`／`playlist_entries`，需持久掛載並備份目前部署模式的 DB 目錄。清單以 Discord 使用者 ID 歸屬，每人最多 20 份、每份 100 首。刪除清單只刪收藏項目，不刪音檔或歌曲資料。
-- Bot 必須完整設定清單 API 才能使用清單功能；設定缺少、不完整或服務故障時會回報錯誤。所有清單操作都經由 API 存取資料庫。
+- Bot 必須完整設定共用 API 網址與金鑰才能使用清單功能；設定缺少、不完整或服務故障時會回報錯誤。所有清單操作都經由 API 存取資料庫。
 - Bot 的清單保存遠端曲目 ID 與 API 網址，播放前重新查詢歌曲。停用或移除曲目後，Bot 會略過無法取得的歌曲並回報，原收藏仍保留；全部無法取得時不開始播放。
 - 更換本服務的對外 API 網址後，需在 Bot 重新加入受影響的遠端收藏；還原本服務資料時請保留曲目 ID。
 - `stream` 模式邊接收邊播放；指定秒數跳轉需重新讀取並解碼到目標位置，受 Bot 載入逾時限制。慢速網路可選 `download`，先下載並驗證大小及 SHA-256 後播放。
@@ -290,7 +289,7 @@ Server 的 `PLAYLIST_BOT_TOKEN` 是獨立的受信任 Bot 服務金鑰，至少 
 
 ## 播放清單 API 與升級
 
-下列介面皆需專用 Bot 金鑰及 `X-Discord-User-Id`（17–20 位數的 Discord ID）。其他使用者的清單／項目回傳 404；驗證失敗為 401，格式錯誤為 400，容量、重複名稱與過期版本為 409。所有寫入在 SQLite transaction 內執行，讀寫結果都有 `Cache-Control: no-store`。
+下列介面皆需 `API_TOKEN` 及 `X-Discord-User-Id`（17–20 位數的 Discord ID）。其他使用者的清單／項目回傳 404；驗證失敗為 401，格式錯誤為 400，容量、重複名稱與過期版本為 409。所有寫入在 SQLite transaction 內執行，讀寫結果都有 `Cache-Control: no-store`。
 
 | 方法與路徑 | 請求／結果 |
 | --- | --- |
@@ -311,7 +310,7 @@ Server 的 `PLAYLIST_BOT_TOKEN` 是獨立的受信任 Bot 服務金鑰，至少 
 
 1. 備份現有 SQLite；暫停 Bot 的清單寫入。
 2. 更新 Server 並執行 `bash scripts/setup.sh`。本機從 `api/` 執行 `npm ci && npm run db:generate && npm run db:migrate && npm run build` 並重新啟動 Server；Docker 執行 `docker compose up -d --build`，啟動時自動套用 migration，保留既有歌曲與清單。移除清單匯入功能的 migration 僅刪除已停用的匯入摘要欄位，不刪除清單或歌曲。
-3. 安全地設定 Bot 的 `PLAYLIST_API_URL`、`PLAYLIST_API_TOKEN`（Server 的專用 Bot 金鑰），更新並建置 Bot。
+3. Bot 沿用 `REMOTE_MUSIC_API_URL`、`REMOTE_MUSIC_API_TOKEN`（Server 的 `API_TOKEN`），更新並建置 Bot；舊的清單專用設定可移除。
 4. 重新啟動 Bot，驗證 `/playlist list`、新增、排序及播放；跨主機部署須確認 Nginx 入口可用。
 
 若 Prisma 回報空白的 `Schema engine error`，請檢查執行環境是否帶入了限制過嚴的 `RUST_LOG`；可使用 `RUST_LOG=info npm run db:migrate`。Prisma CLI 與 Client 固定使用 6.19.3。
@@ -324,9 +323,8 @@ Docker 部署修改根目錄 `.env`；Linux 本機 API 修改 `api/.env`。`scri
 
 | 設定 | 範例／預設值 | 用途 |
 | --- | --- | --- |
-| `API_TOKEN` | 腳本產生的 64 字元隨機金鑰 | 搜尋、查詢與播放授權；至少 32 字元，必須替換範例占位文字 |
+| `API_TOKEN` | 腳本產生的 64 字元隨機金鑰 | 搜尋、查詢、播放及個人清單管理授權；至少 32 字元，必須替換範例占位文字 |
 | `ADMIN_TOKEN` | 另一組隨機金鑰 | 上傳授權；至少 32 字元且須與 API_TOKEN 不同，留空會停用上傳 |
-| `PLAYLIST_BOT_TOKEN` | setup.sh 產生的獨立隨機金鑰 | 受信任 Bot 的個人清單 API 授權；至少 32 字元，須與另外兩種金鑰不同；明確留空則停用清單 API |
 | `MAX_AUDIO_BYTES` | `268435456`（256 MiB） | 每首音檔大小上限；HTTP 上傳即使設更大仍限制為 256 MiB，CLI 匯入使用設定值 |
 | `MIN_FREE_BYTES` | `536870912`（512 MiB） | 上傳／匯入時要求保留的磁碟空間 |
 | `LIBRARY_QUOTA_BYTES` | `10737418240`（10 GiB） | 曲庫容量上限，包含停用曲目 |
