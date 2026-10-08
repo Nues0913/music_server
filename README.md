@@ -256,14 +256,16 @@ REMOTE_MUSIC_BUFFER_SECONDS=3
 
 歌曲與個人清單共用 `REMOTE_MUSIC_API_URL`、`REMOTE_MUSIC_API_TOKEN`；Token 使用目前部署模式的 `API_TOKEN`，上傳管理使用另外的 `ADMIN_TOKEN`。Docker 模式的金鑰在根目錄 `.env`，本機 API 模式則在 `api/.env`；兩份既有設定不會自動同步。請透過安全的環境設定將金鑰提供給 Bot，不要提交金鑰到 Git。
 
+Bot 的音樂與清單指令、歌曲自動完成及面板選歌皆預設遠端；本地曲庫需明確指定 `source:local`。`/music reload` 預設重新讀取遠端曲庫，`/music reload source:local` 才會掃描 Bot 本地音檔。既有清單項目依儲存的來源播放，進場音樂仍使用原本的本地音檔設定。
+
 Bot 端的常用操作：
 
 | 指令 | 用途 |
 | --- | --- |
-| `/music library source:remote` | 瀏覽本服務的曲庫 |
-| `/music play source:remote song:歌曲` | 播放遠端歌曲或加入共用佇列 |
+| `/music library` | 瀏覽本服務的曲庫 |
+| `/music play song:歌曲` | 播放遠端歌曲或加入共用佇列 |
 | `/playlist create name:通勤` | 建立自己的清單 |
-| `/playlist add playlist:通勤 source:remote song:歌曲` | 收藏遠端曲目；也可選本地來源 |
+| `/playlist add playlist:通勤 song:歌曲` | 預設收藏遠端曲目；本地需指定 `source:local` |
 | `/playlist add-current playlist:通勤` | 收藏 Bot 目前播放的曲目 |
 | `/playlist play playlist:通勤 shuffle:true` | 將清單加入播放，可選隨機順序 |
 
