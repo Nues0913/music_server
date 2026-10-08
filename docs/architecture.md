@@ -59,9 +59,9 @@ revision 的 HTTP 驗證上限與 Prisma Int 一致，為 2147483647。從 21474
 
 ## 前端邊界
 
-controller 管目前 request、busy、啟用狀態與檔案上限，client 管網路，view 管 DOM。以 request generation 拒絕已完成上傳的晚到進度，dispose 取消請求並忽略晚到結果；一般 pagehide 清理 listeners，瀏覽器保留頁面於 bfcache 時保留可恢復狀態。
+controller 管歌曲佇列、逐首 metadata／狀態、目前 request、busy、啟用狀態與檔案上限，client 管網路，view 管 DOM。多首選檔／拖曳仍依序呼叫單檔 POST /v1/songs，不改 multipart 上限或後端上傳 slot。以 request generation 拒絕已完成／取消上傳的晚到進度，dispose 取消請求並忽略晚到結果、不開始下一首；一般 pagehide 清理 listeners，瀏覽器保留頁面於 bfcache 時保留可恢復狀態。
 
-成功新增才清除已選檔案；重複歌曲與失敗保留輸入。取消、網路錯誤、HTTP 失敗及 timeout 都釋放 busy。token 僅來自頁面 input，不寫 localStorage/sessionStorage，不放在 URL。靜態資源使用明確清單，保留 CSP、nosniff 與 no-store。
+選檔後由佇列持有 File，清空 picker 以允許再次選取相同檔案；成功／重複會釋放該首 File 並保留結果。格式或大小不符的檔案標記為 invalid 並略過，失敗／取消／待處理的檔案保留供重試。取消停止剩餘項目；個別上傳錯誤繼續，其餘項目遇 401、403 或 507 才停止整批。批次結束釋放 busy，再次提交僅處理未完成項目。重新選檔替換清單，狀態僅存在目前頁面。token 僅來自頁面 input，不寫 localStorage/sessionStorage，不放在 URL。檔名與伺服器回應以 textContent 顯示，靜態資源使用明確清單，保留 CSP、nosniff 與 no-store。
 
 ## 驗證與維護
 

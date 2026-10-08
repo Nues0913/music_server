@@ -4,7 +4,7 @@ import { createUploadView, bindUploadEvents } from './uploads/view.js';
 
 const view = createUploadView(document);
 const controller = createUploadController(view, createUploadClient());
-const unbind = bindUploadEvents(document, controller, view);
+const unbind = bindUploadEvents(document, controller);
 void controller.initialize();
 window.addEventListener('pagehide', event => {
   if (!event.persisted) { controller.dispose(); unbind(); }

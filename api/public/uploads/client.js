@@ -20,9 +20,9 @@ export function createUploadClient({ fetch = globalThis.fetch, XMLHttpRequest = 
         xhr.onload = () => {
           let result;
           try { result = JSON.parse(xhr.responseText); }
-          catch { return reject(new Error(`伺服器回應異常（${xhr.status}），請稍後重試。`)); }
-          if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(
-            typeof result?.error === 'string' ? result.error : '上傳失敗，請稍後重試。'));
+          catch { return reject(Object.assign(new Error(`伺服器回應異常（${xhr.status}），請稍後重試。`), { status: xhr.status })); }
+          if (xhr.status < 200 || xhr.status >= 300) return reject(Object.assign(new Error(
+            typeof result?.error === 'string' ? result.error : '上傳失敗，請稍後重試。'), { status: xhr.status }));
           if (!result?.song || typeof result.song.title !== 'string') return reject(new Error('伺服器回應異常，請稍後重試。'));
           resolve(result);
         };
