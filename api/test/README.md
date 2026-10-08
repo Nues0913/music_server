@@ -59,3 +59,8 @@ python3 api/test/nginx.py
 ```
 
 使用 Pebble 私人測試 CA，驗證 Nginx 從零透過 HTTP-01 取得憑證、容器重建後載入既有憑證及短效憑證自動續期，並測試 HTTP／HTTPS、網域限制、代理標頭、上傳與 Range。測試不連正式 Let's Encrypt，完成後清除測試容器、網路與憑證 volume。
+
+
+## 架構重構檢查
+
+`npm run check:architecture` 檢查依賴方向與 runtime import 循環。`npm run test:unit` 使用 fixture 測 HTTP、管理頁、清單規則及真實 SQLite migration SQL，不需 Prisma 原生引擎；Chromium 可用 BROWSER_PATH 指定。這些測試不替代上方的 Prisma transaction／容量／持久化整合測試。

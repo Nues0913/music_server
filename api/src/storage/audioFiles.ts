@@ -13,4 +13,3 @@ export async function resolveAudio(root: string, fileKey: string): Promise<strin
   if (dirname(resolved) !== base) throw new Error('Audio outside library');
   return resolved;
 }
-

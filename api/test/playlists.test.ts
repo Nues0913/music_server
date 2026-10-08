@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 import { buildApp } from '../src/app.js';
-import { connectDatabase } from '../src/db.js';
+import { connectDatabase } from '../src/infrastructure/database.js';
 import { playlistBotToken } from '../src/config.js';
 const token = 'playback-fixture-token-012345678901234567890';
 const botToken = 'playlist-fixture-token-012345678901234567890';

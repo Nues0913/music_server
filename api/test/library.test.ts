@@ -7,9 +7,9 @@ import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { PrismaClient } from '@prisma/client';
-import { connectDatabase } from '../src/db.js';
+import { connectDatabase } from '../src/infrastructure/database.js';
 import { buildApp } from '../src/app.js';
-import { importFile, type ImportOptions } from '../src/importer.js';
+import { importFile, type ImportOptions } from '../src/modules/ingestion/importer.js';
 
 let root: string;
 let db: PrismaClient;

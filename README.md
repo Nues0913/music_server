@@ -360,3 +360,8 @@ Docker 容器內的 Nginx 固定監聽 `0.0.0.0`；`NGINX_BIND` 控制的是主�
 修改根目錄 `.env` 後，在根目錄執行 `docker compose up -d` 套用設定；只執行 `restart` 不會更新容器環境變數。本機 API 修改設定後，停止並重新執行 `npm run dev`。本機 Nginx 直接修改 `/etc/nginx/conf.d/music.conf`，檢查設定後重新載入；不讀取 `.env`。
 
 Docker 與本機預設使用不同資料目錄，避免同時寫入同一個 SQLite。`.env` 包含金鑰，請勿提交到 Git。
+
+
+## 程式架構
+
+前後端模組邊界、transaction、資源所有權與驗證方式見 [架構說明](docs/architecture.md)。

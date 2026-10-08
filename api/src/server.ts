@@ -1,6 +1,6 @@
 import { buildApp } from './app.js';
 import { apiToken, adminToken, playlistBotToken, audioDirectory, positiveInteger } from './config.js';
-import { connectDatabase } from './db.js';
+import { connectDatabase } from './infrastructure/database.js';
 
 const token = apiToken();
 const db = await connectDatabase();
