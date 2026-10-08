@@ -274,14 +274,14 @@ Bot 端的常用操作：
 
 **清單服務驗證**
 
-Server 的 `PLAYLIST_BOT_TOKEN` 是獨立的受信任 Bot 服務金鑰，至少 32 字元，須與 `API_TOKEN`、`ADMIN_TOKEN` 不同。`scripts/setup.sh` 會為缺少此設定的安裝產生隨機值；既有值及明確留空的設定會保留。將它安全地提供給 Bot 的 `PLAYLIST_API_TOKEN`，並設定 `PLAYLIST_API_URL`，Bot 就會改用 Server 儲存清單。留空 `PLAYLIST_BOT_TOKEN` 會停用清單 API；歌曲 API 照常運作。
+Server 的 `PLAYLIST_BOT_TOKEN` 是獨立的受信任 Bot 服務金鑰，至少 32 字元，須與 `API_TOKEN`、`ADMIN_TOKEN` 不同。`scripts/setup.sh` 會為缺少此設定的安裝產生隨機值；既有值及明確留空的設定會保留。將它安全地提供給 Bot 的 `PLAYLIST_API_TOKEN`，並設定 `PLAYLIST_API_URL`，Bot 的所有清單管理必須透過 Server API，清單一律由 Server SQLite 儲存。留空 `PLAYLIST_BOT_TOKEN` 會停用清單 API；歌曲 API 照常運作。
 
 每個清單 API 請求使用 `Authorization: Bearer <PLAYLIST_BOT_TOKEN>` 與 `X-Discord-User-Id`。Bot 必須從 Discord interaction 的 `user.id` 取得身分，不可接受使用者自行輸入他人的 ID。Server 驗證服務金鑰後，以該使用者 ID 限定所有查詢及修改；一般播放／上傳金鑰無法存取清單。這是 Bot 到 Server 的受信任服務介面，不是供瀏覽器或一般使用者持金鑰呼叫的公開登入 API；勿將此金鑰交給 Discord 使用者。跨主機連線請使用 HTTPS。
 
 **資料保存與曲目異動**
 
-- 音檔、曲目索引及啟用 Server 模式的個人清單都由本服務保存。清單存於 SQLite 的 `playlists`／`playlist_entries`，需持久掛載並備份目前部署模式的 DB 目錄。清單以 Discord 使用者 ID 歸屬，每人最多 20 份、每份 100 首。刪除清單只刪收藏項目，不刪音檔或歌曲資料。
-- Bot 未設定清單 API 時仍可使用既有本地 JSON 模式；一旦設定任一清單 API 變數，就必須完整設定並成功連線，故障時不會退回本地寫入。
+- 本服務保存遠端音檔、曲目索引及所有個人清單。清單存於 SQLite 的 `playlists`／`playlist_entries`，需持久掛載並備份目前部署模式的 DB 目錄。清單以 Discord 使用者 ID 歸屬，每人最多 20 份、每份 100 首。刪除清單只刪收藏項目，不刪音檔或歌曲資料。
+- Bot 必須完整設定清單 API 才能使用清單功能；設定缺少、不完整或服務故障時會回報錯誤。Bot 不保存清單 JSON，舊 JSON 僅供一次性匯入。
 - Bot 的清單保存遠端曲目 ID 與 API 網址，播放前重新查詢歌曲。停用或移除曲目後，Bot 會略過無法取得的歌曲並回報，原收藏仍保留；全部無法取得時不開始播放。
 - 更換本服務的對外 API 網址後，需在 Bot 重新加入受影響的遠端收藏；還原本服務資料時請保留曲目 ID。
 - `stream` 模式邊接收邊播放；指定秒數跳轉需重新讀取並解碼到目標位置，受 Bot 載入逾時限制。慢速網路可選 `download`，先下載並驗證大小及 SHA-256 後播放。
