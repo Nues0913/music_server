@@ -43,6 +43,8 @@ api/
 
 Bot 必須傳它實際讀到的 revision。409 後重新讀取並讓使用者確認，不自動重試覆蓋。專用 Bot 金鑰與 `X-Discord-User-Id` 仍是清單信任邊界，不能從請求 body 接收 ownerId。
 
+清單 API 保存及回傳收藏參照，不在讀取清單時檢查音檔或過濾不可用歌曲；本地檔案可能位於 Bot 主機，遠端歌曲也可能暫時無法取得。曲庫檔案不可讀時，歌曲 audio 路由可回 404，但清單 GET/list 仍保留全部 entries、順序、重複收藏及 revision。Bot 在播放時分別解析來源、略過不可用項目並通知使用者；純遠端清單不依賴 Bot 的本地曲庫。新增 HTTP 契約測試使用實際檔案錯誤與注入的 DB 讀取資料驗證這個邊界，不取代原生 Prisma 持久化測試。
+
 本次沒有更動 schema 或 migrations。dev 已移除的清單匯入 API 維持不存在；既有 `remove_playlist_import` migration 只移除 `import_hash`，保留 ID、entries、revision 與外鍵。
 
 ## 上傳與資源所有權

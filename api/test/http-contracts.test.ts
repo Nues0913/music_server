@@ -1,10 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { PrismaClient } from '@prisma/client';
 import Fastify from 'fastify';
+import { buildApp } from '../src/app.js';
 import { registerPlaylists } from '../src/modules/playlists/routes.js';
 import { registerSongs } from '../src/modules/songs/routes.js';
 import { registerUpload } from '../src/modules/uploads/routes.js';
-import { PlaylistError } from '../src/modules/playlists/model.js';
+import { createEntries, PlaylistError } from '../src/modules/playlists/model.js';
 import { SongError } from '../src/modules/songs/service.js';
 import { UploadError } from '../src/modules/uploads/errors.js';
 import type { PlaylistService } from '../src/modules/playlists/service.js';
@@ -38,6 +43,40 @@ test('playlist HTTP boundary validates identity and payload, forwarding the call
   const deleted = await app.inject({ method: 'DELETE', url: `/v1/playlists/${id}`, headers, payload: { revision: 3 } });
   assert.equal(deleted.statusCode, 204); assert.equal(deleted.body, ''); assert.deepEqual(calls.at(-1), ['delete', owner, id, 3]);
   assert.equal((await app.inject({ method: 'PUT', url: `/v1/playlists/${id}/import`, headers, payload: {} })).statusCode, 404);
+});
+
+test('playlist reads preserve saved references and revision even when the song audio directory is unavailable', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'playlist-availability-contract-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const audioRoot = join(directory, 'unavailable-audio-directory');
+  await writeFile(audioRoot, 'A regular file cannot serve as an audio directory.');
+  const songId = '00000000-0000-4000-8000-000000000002';
+  const local = { source: 'local' as const, id: 'missing-bot-local-file', title: 'Saved local song' };
+  const remote = { source: 'remote' as const, id: songId, title: 'Saved remote song', library: 'https://music.example/' };
+  const tracks = [local, remote, local];
+  const row = { id, ownerId: owner, name: 'saved mix', nameKey: 'saved mix', revision: 7,
+    entries: createEntries(tracks).map(entry => ({ ...entry, playlistId: id,
+      artist: entry.artist ?? null, library: entry.library ?? null })) };
+  const snapshot = structuredClone(row);
+  // Inject stored rows, while exercising the real app, services and filesystem check.
+  // This read contract does not stand in for the native Prisma transaction tests.
+  const db = {
+    playlist: { async findFirst() { return row; }, async findMany() { return [row]; } },
+    song: { async findFirst() { return { id: songId, fileKey: `${songId}.wav`, mimeType: 'audio/wav', byteSize: 100 }; } },
+  } as unknown as PrismaClient;
+  const songToken = 'song-contract-fixture-token-012345678901234567890';
+  const app = buildApp({ db, token: songToken, playlistToken: token, audioRoot });
+  t.after(() => app.close());
+  const audio = await app.inject({ url: `/v1/songs/${songId}/audio`, headers: { authorization: `Bearer ${songToken}` } });
+  assert.equal(audio.statusCode, 404);
+  assert.deepEqual(audio.json(), { error: 'Audio unavailable' });
+  const expectedEntries = tracks.map((track, index) => ({ ...track, entryId: row.entries[index]!.entryId }));
+  const get = await app.inject({ url: `/v1/playlists/${id}`, headers });
+  assert.equal(get.statusCode, 200); assert.equal(get.json().revision, 7);
+  assert.deepEqual(get.json().entries, expectedEntries);
+  const list = await app.inject({ url: '/v1/playlists', headers });
+  assert.equal(list.statusCode, 200); assert.deepEqual(list.json().items, [get.json()]);
+  assert.deepEqual(row, snapshot);
 });
 
 test('song boundary delegates audio bytes to Nginx and keeps validation and unexpected failures distinct', async t => {
