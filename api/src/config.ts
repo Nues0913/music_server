@@ -25,4 +25,3 @@ export function adminToken(): string | undefined {
   }
   return value;
 }
-

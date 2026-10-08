@@ -1,15 +1,15 @@
 import { before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, writeFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { PrismaClient } from '@prisma/client';
-import { connectDatabase } from '../src/db.js';
+import { connectDatabase } from '../src/infrastructure/database.js';
 import { buildApp } from '../src/app.js';
-import { importFile, type ImportOptions } from '../src/importer.js';
+import { importFile, type ImportOptions } from '../src/modules/ingestion/importer.js';
 
 let root: string;
 let db: PrismaClient;
@@ -82,12 +82,37 @@ test('bad files and disk/quota constraints leave no visible rows or partial file
   const bad = join(options.inbox, 'broken.mp3');
   await writeFile(bad, 'not music');
   await assert.rejects(importFile(options, bad));
-  const source = join(options.inbox, 'valid.wav'); await writeFile(source, wav());
+  const source = join(options.inbox, 'valid.wav'); const unique = wav(); unique.writeInt16LE(13, 44); await writeFile(source, unique);
   await assert.rejects(importFile({ ...options, quotaBytes: 1 }, source), /quota/);
   await assert.rejects(importFile({ ...options, minFreeBytes: Number.MAX_SAFE_INTEGER }, source), /disk/);
   await assert.rejects(importFile({ ...options, maxBytes: 1 }, source), /size/);
   await assert.rejects(importFile(options, join(root, 'outside.wav')), /first-level/);
   assert.equal(await db.song.count(), count);
+  assert.equal((await readdir(options.audioRoot)).some(name => name.endsWith('.part') || name === '.import-lock'), false);
+});
+
+test('duplicates at full quota repair missing/corrupted audio without changing rows or deleting inbox originals', async () => {
+  const source = join(options.inbox, 'repair.wav'), audio = wav(); audio.writeInt16LE(39, 44);
+  await writeFile(source, audio);
+  const initial = await importFile(options, source);
+  const record = await db.song.findUniqueOrThrow({ where: { id: initial.id } });
+  const path = join(options.audioRoot, record.fileKey);
+  const full = { ...options, quotaBytes: 1 };
+  assert.deepEqual(await importFile(full, source), { status: 'duplicate', id: initial.id });
+  await rm(path);
+  assert.deepEqual(await importFile(full, source), { status: 'duplicate', id: initial.id });
+  assert.deepEqual(await readFile(path), audio);
+  const corrupt = Buffer.from(audio); corrupt.writeInt16LE(40, 44); await writeFile(path, corrupt);
+  await importFile(full, source); assert.deepEqual(await readFile(path), audio);
+  assert.deepEqual(await db.song.findUniqueOrThrow({ where: { id: initial.id } }), record);
+  assert.deepEqual(await readFile(source), audio);
+  await db.song.update({ where: { id: initial.id }, data: { status: 'disabled' } });
+  await rm(path); await importFile(full, source);
+  assert.equal((await db.song.findUniqueOrThrow({ where: { id: initial.id } })).status, 'disabled');
+  await rm(path); await symlink(source, path);
+  await assert.rejects(importFile(full, source), /regular stored audio/);
+  await rm(path); await writeFile(path, audio);
+  await assert.rejects(importFile({ ...full, minFreeBytes: Number.MAX_SAFE_INTEGER }, source), /disk/);
   assert.equal((await readdir(options.audioRoot)).some(name => name.endsWith('.part') || name === '.import-lock'), false);
 });
 

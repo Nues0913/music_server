@@ -15,4 +15,3 @@ export async function connectDatabase(url = process.env.DATABASE_URL): Promise<P
     throw error;
   }
 }
-
