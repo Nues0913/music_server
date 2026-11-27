@@ -44,7 +44,7 @@ export async function importFile(options: ImportOptions, source: string, labels:
       if (existing) {
         const stored = await storedAudio(audioRoot, existing);
         if (!stored.intact) {
-          const replacement = original ? await normalizeUpload(input, temporary, audioRoot, options, upload.signal) : await copyInput();
+          const replacement = original ? await normalizeUpload(input, temporary, audioRoot, options, upload.signal, existing) : await copyInput();
           if (replacement.sha256 !== existing.sha256 || replacement.byteSize !== existing.byteSize) {
             throw new Error('Replacement does not match the registered audio fingerprint');
           }

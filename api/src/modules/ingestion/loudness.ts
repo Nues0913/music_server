@@ -5,8 +5,13 @@ import { fingerprintAudio } from '../../storage/copyAudio.js';
 import { CapacityError, InvalidAudioError, NormalizedAudioTooLargeError } from '../../storage/errors.js';
 
 const peakLimit = -2;
-const target = `loudnorm=I=-17:TP=${peakLimit}:LRA=50`;
+const loudnessTarget = -17;
+const rangeTarget = 50;
+const peakHeadroomDb = 0.5;
+const loudnessToleranceLu = 0.5;
+const target = `loudnorm=I=${loudnessTarget}:TP=${peakLimit}:LRA=${rangeTarget}`;
 const sampleClock = 'asetpts=N/SR/TB';
+const meterFilter = `aresample=48000,${sampleClock},ebur128=peak=true:framelog=verbose`;
 // Some encoders and containers add or drop a few frames of codec delay or padding.
 const durationToleranceUs = 100_000;
 const opus = ['-c:a', 'libopus', '-b:a', '128k'];
@@ -20,14 +25,15 @@ const formats: Readonly<Record<string, { demuxer: string; muxer: string; encode:
   '.webm': { demuxer: 'matroska', muxer: 'webm', encode: opus },
 };
 
-async function runFfmpeg(path: string, demuxer: string, output: string[], signal: AbortSignal, analysis = false) {
+async function runFfmpeg(path: string, demuxer: string, output: string[], signal: AbortSignal,
+  { source = false, map = '0:a:0' } = {}) {
   signal.throwIfAborted();
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn('ffmpeg', [
       '-nostdin', '-hide_banner', '-nostats', '-stats_period', '3600', '-loglevel', 'info', '-xerror',
       '-filter_threads', '1', '-filter_complex_threads', '1', '-max_alloc', '67108864', '-progress', 'pipe:1',
       '-protocol_whitelist', 'file', '-threads', '1', '-f', demuxer, '-i', path,
-      '-map', analysis ? '[clock]' : '0:a:0', '-map_metadata', '-1', '-map_chapters', '-1', ...output,
+      '-map', map, '-map_metadata', '-1', '-map_chapters', '-1', ...output,
     ], { signal, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', processError: Error | undefined;
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout = (stdout + chunk).slice(-4096); });
@@ -39,9 +45,9 @@ async function runFfmpeg(path: string, demuxer: string, output: string[], signal
       if (processError) return reject(processError);
       if (code === 0) return resolve({ stdout, stderr });
       if (stderr.includes('No space left on device')) return reject(new CapacityError('Insufficient space for normalized audio'));
-      if (analysis && code !== null) return reject(new InvalidAudioError('FFmpeg could not decode uploaded audio'));
+      if (source && code !== null) return reject(new InvalidAudioError('FFmpeg could not decode uploaded audio'));
       // FFmpeg stderr can include arbitrary embedded tags. Keep it out of server logs.
-      reject(new Error(`FFmpeg ${analysis ? 'analysis' : 'encoding'} failed (${code ?? termination ?? 'unknown'})`));
+      reject(new Error(`FFmpeg ${source ? 'analysis' : 'processing'} failed (${code ?? termination ?? 'unknown'})`));
     });
   });
 }
@@ -68,22 +74,26 @@ function measuredOptions(stderr: string) {
   }).join(':');
 }
 
+async function measureAudio(path: string, demuxer: string, signal: AbortSignal, source = false) {
+  const result = await runFfmpeg(path, demuxer, ['-af', meterFilter, '-f', 'null', '-'], signal, { source });
+  const summary = result.stderr.slice(result.stderr.lastIndexOf('Summary:'));
+  return {
+    time: finishedAt(result.stdout),
+    loudness: Number(summary.match(/Integrated loudness:\s+I:\s+([+-]?\d+(?:\.\d+)?)\s+LUFS/)?.[1]),
+    range: Number(summary.match(/Loudness range:\s+LRA:\s+(\d+(?:\.\d+)?)\s+LU/)?.[1]),
+    peak: Number(summary.match(/True peak:\s+Peak:\s+([+-]?\d+(?:\.\d+)?)\s+dBFS/)?.[1]),
+  };
+}
+
 export async function normalizeUpload(input: { path: string; extension: string }, destination: string,
-  audioRoot: string, limits: CapacityLimits, signal: AbortSignal) {
+  audioRoot: string, limits: CapacityLimits, signal: AbortSignal, expected?: { byteSize: number; sha256: string }) {
   const format = formats[input.extension.toLowerCase()];
   if (!format) throw new InvalidAudioError('Unsupported audio extension');
-  // loudnorm's dynamic filter can report a padded last block. Count decoded input samples on a separate branch.
-  const analysisFilter = `[0:a:0]aresample=48000,asplit=2[raw][meter];[raw]${sampleClock}[clock];` +
-    `[meter]${target}:print_format=json,anullsink`;
-  const analysis = await runFfmpeg(input.path, format.demuxer,
-    ['-filter_complex', analysisFilter, '-ar', '48000', '-f', 'null', '-'], signal, true);
-  const inputTime = finishedAt(analysis.stdout);
-  const measured = measuredOptions(analysis.stderr);
+  const original = await measureAudio(input.path, format.demuxer, signal, true);
   const diskBudget = await availableDiskBudget(audioRoot, limits.minFreeBytes);
   const maxOutput = Math.min(limits.maxBytes, diskBudget);
   if (maxOutput <= 0) throw new CapacityError('Insufficient space for normalized audio');
-  const render = async (trimDb: number) => {
-    const filter = `aresample=48000,${target}:${measured}:linear=true,aresample=48000,volume=${trimDb}dB`;
+  const render = async (filter: string) => {
     await runFfmpeg(input.path, format.demuxer, [
       '-af', filter, '-ar', '48000', ...format.encode,
       '-threads', '1', '-fflags', '+bitexact', '-flags:a', '+bitexact', '-fs', String(maxOutput + 1),
@@ -96,27 +106,45 @@ export async function normalizeUpload(input: { path: string; extension: string }
       throw new NormalizedAudioTooLargeError('Normalized audio exceeds file size limit');
     }
     // A capped render may still exit successfully. Verify decoded length and peak in the final file.
-    const checks = await runFfmpeg(destination, format.demuxer,
-      ['-af', `aresample=48000,${sampleClock},ebur128=peak=true:framelog=verbose`, '-f', 'null', '-'], signal);
-    const time = finishedAt(checks.stdout);
-    if (time + durationToleranceUs < inputTime) {
-      throw new Error(`Normalized audio is incomplete (${time} of ${inputTime} microseconds)`);
+    const checks = await measureAudio(destination, format.demuxer, signal);
+    if (checks.time + durationToleranceUs < original.time) {
+      throw new Error(`Normalized audio is incomplete (${checks.time} of ${original.time} microseconds)`);
     }
-    const summary = checks.stderr.slice(checks.stderr.lastIndexOf('Summary:'));
-    const peak = Number(summary.match(/True peak:\s+Peak:\s+([+-]?\d+(?:\.\d+)?)\s+dBFS/)?.[1]);
-    if (!Number.isFinite(peak)) throw new Error('FFmpeg did not return output true peak');
-    return { size, time, peak };
+    if (!Number.isFinite(checks.peak)) throw new Error('FFmpeg did not return output true peak');
+    return { size, ...checks };
   };
+  const fingerprint = async ({ size, time }: { size: number; time: number }) => {
+    await assertDiskCapacity(audioRoot, 0, limits.minFreeBytes);
+    const result = await fingerprintAudio(destination, maxOutput);
+    if (!result?.byteSize || result.byteSize !== size) throw new Error('Normalized audio changed before import');
+    return { ...result, durationSeconds: time / 1_000_000 };
+  };
+
+  // EBU's summary is rounded to a tenth. Leave room for rounding and overshoot from lossy encoders.
+  const gain = Number((loudnessTarget - original.loudness).toFixed(1));
+  if (original.loudness > -69.9 && original.range < rangeTarget && original.peak + gain <= peakLimit - peakHeadroomDb) {
+    const quick = await render(`aresample=48000,volume=${gain}dB:precision=double`);
+    if (quick.peak <= peakLimit && quick.range <= rangeTarget && Math.abs(quick.loudness - loudnessTarget) <= loudnessToleranceLu) {
+      const result = await fingerprint(quick);
+      if (!expected || (result.sha256 === expected.sha256 && result.byteSize === expected.byteSize)) return result;
+    }
+    // Preserve the ability to regenerate bytes for songs stored by the original full loudnorm workflow.
+    await rm(destination);
+  }
+
+  const analysisFilter = `[0:a:0]aresample=48000,asplit=2[raw][meter];[raw]${sampleClock}[clock];` +
+    `[meter]${target}:print_format=json,anullsink`;
+  const analysis = await runFfmpeg(input.path, format.demuxer,
+    ['-filter_complex', analysisFilter, '-ar', '48000', '-f', 'null', '-'], signal, { source: true, map: '[clock]' });
+  const measured = measuredOptions(analysis.stderr);
+  const fullFilter = (trimDb: number) => `aresample=48000,${target}:${measured}:linear=true,aresample=48000,volume=${trimDb}dB`;
   let trimDb = 0;
-  let result = await render(0);
+  let result = await render(fullFilter(0));
   for (let retry = 0; retry < 2 && result.peak > peakLimit; retry++) {
     trimDb -= result.peak - peakLimit + 0.2;
     await rm(destination);
-    result = await render(trimDb);
+    result = await render(fullFilter(trimDb));
   }
   if (result.peak > peakLimit) throw new Error('Normalized audio still exceeds the true-peak ceiling');
-  await assertDiskCapacity(audioRoot, 0, limits.minFreeBytes);
-  const fingerprint = await fingerprintAudio(destination, maxOutput);
-  if (!fingerprint?.byteSize || fingerprint.byteSize !== result.size) throw new Error('Normalized audio changed before import');
-  return { ...fingerprint, durationSeconds: result.time / 1_000_000 };
+  return fingerprint(result);
 }
