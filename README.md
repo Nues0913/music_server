@@ -50,7 +50,7 @@ ACME HTTP-01 的申請與續期仍要求**外部 80 埠**能抵達容器的 80�
 
 ## Linux 本機開發
 
-需要 Node.js 22.12+、npm 與 OpenSSL。從根目錄執行：
+需要 Node.js 22.12+、npm 與 OpenSSL。網頁上傳另需 `PATH` 上的 FFmpeg（Debian／Ubuntu 可用 `sudo apt install ffmpeg`）。Docker API 映像已包含 FFmpeg。從根目錄執行：
 
 ```bash
 bash scripts/setup.sh
@@ -214,7 +214,9 @@ docker compose exec api node dist/cli.js enable <song-id>
 
 匯入只掃 inbox 第一層，支援 mp3、flac、wav、ogg、opus、m4a、webm。流程為檔案／容量檢查 → 串流複製及 SHA-256 → metadata 辨識 → 私有檔案改名 → Prisma 建檔。原始檔保留，同雜湊不重複匯入；失敗清理暫存並且不產生可見曲目。
 
-上傳也以串流寫入暫存，不將整首音檔放進 RAM。每個 API 程序同時只允許一筆上傳／匯入；磁碟應預留最多兩倍單檔大小及 MIN_FREE_BYTES。格式與 metadata 檢查不包含整首解碼驗證。
+網頁及 `POST /v1/songs` 上傳會先串流寫入暫存，再用 FFmpeg 做兩遍響度正規化（`loudnorm=I=-17:TP=-2:LRA=50`）。以固定增益優先，若原有峰值或動態範圍不允許，FFmpeg 會使用動態模式。成品保留原副檔名及其大小寫。MP3 用 MP3 編碼，其他格式也使用對應的編碼與容器。重新編碼後會量測成品的真峰值。歌名及演出者沿用上傳欄位或原檔標籤。`byteSize` 和 `sha256` 描述實際播放的檔案。既有歌曲與 CLI 批次匯入不會重新正規化。
+
+同時只處理一筆上傳／匯入。磁碟需同時容納暫存原檔、正規化成品及 `MIN_FREE_BYTES`；成品以實際大小計入曲庫配額。原檔或成品超過大小上限會拒絕上傳。完全無聲或無法量出整體響度的內容也會拒絕。收到完整音檔後，正規化最多可花 10 分鐘。處理失敗會清除暫存且不新增曲目。
 
 停用拒絕新播放請求，保留音檔且不打斷既有串流。尚無實體刪除 CLI。匯入使用 `.import-lock`；異常退出時，確認沒有匯入工作後再清理殘留鎖及 `.part`。
 
@@ -239,7 +241,7 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
   https://music.example.com/v1/songs
 ```
 
-新增回傳 201：`{status:"imported",id,song}`；重複檔案回傳 200：`{status:"duplicate",id,song}`，不覆寫既有標籤或停用狀態。去重會確認實際音檔的大小與 SHA-256，缺失或損壞時以相同有效來源原子修復原音檔，保留歌曲 ID 與 UUID 檔名；來源 inbox 原檔仍保留。重複歌曲不增加曲庫配額，但複製及驗證仍需要磁碟預留空間。錯誤包含 401 金鑰、400 無效音訊／欄位、413 超限、415 格式、409 正在上傳／匯入、507 空間／配額不足、503 內部／資料庫／非預期 I/O 故障。輸入錯誤記 INFO，容量不足記 WARN，未預期系統故障記 ERROR；HTTP 格式與大小錯誤保留原 4xx。
+新增回傳 201：`{status:"imported",id,song}`；重複檔案回傳 200：`{status:"duplicate",id,song}`，保留既有標籤、停用狀態及歌曲 ID。上傳的原檔指紋用來辨識重傳，不透過 API 公開。重傳會確認入庫音檔的大小與 SHA-256。檔案缺失或損壞時，才重新產生與原成品指紋一致的檔案作修復。若 FFmpeg 版本不同導致成品位元組不一致，修復會拒絕替換，需要還原原成品備份。來源 inbox 原檔仍保留。重複歌曲不增加曲庫配額，但暫存及驗證仍需要磁碟預留空間。錯誤包含 401 金鑰、400 無效音訊／欄位、413 超限、415 格式、409 正在上傳／匯入、507 空間／配額不足、503 內部／資料庫／非預期 I/O 故障。輸入錯誤記 INFO，容量不足記 WARN，未預期系統故障記 ERROR；HTTP 格式與大小錯誤保留原 4xx。
 
 Nginx 支援單一 Range，`/protected-audio/` 為 internal。SQLite 使用 WAL、單一連線與有界快取；一般索引不保證加速任意中文子字串搜尋。
 
@@ -331,7 +333,7 @@ Docker 部署修改根目錄 `.env`；Linux 本機 API 修改 `api/.env`。`scri
 | --- | --- | --- |
 | `API_TOKEN` | 腳本產生的 64 字元隨機金鑰 | 搜尋、查詢、播放及個人清單管理授權；至少 32 字元，必須替換範例占位文字 |
 | `ADMIN_TOKEN` | 另一組隨機金鑰 | 上傳授權；至少 32 字元且須與 API_TOKEN 不同，留空會停用上傳 |
-| `MAX_AUDIO_BYTES` | `268435456`（256 MiB） | 每首音檔大小上限；HTTP 上傳即使設更大仍限制為 256 MiB，CLI 匯入使用設定值 |
+| `MAX_AUDIO_BYTES` | `268435456`（256 MiB） | 每首音檔大小上限；HTTP 上傳原檔與正規化成品皆受限，最多 256 MiB。CLI 匯入使用設定值 |
 | `MIN_FREE_BYTES` | `536870912`（512 MiB） | 上傳／匯入時要求保留的磁碟空間 |
 | `LIBRARY_QUOTA_BYTES` | `10737418240`（10 GiB） | 曲庫容量上限，包含停用曲目 |
 
