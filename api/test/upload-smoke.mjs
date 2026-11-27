@@ -34,19 +34,36 @@ const responsePromise = new Promise((resolve, reject) => {
     response.on('end', () => resolve({ status: response.statusCode, body }));
   });
 });
-const zero = Buffer.alloc(64 * 1024);
+const tone = Buffer.alloc(64 * 1024);
+for (let frame = 0; frame < tone.length / 4; frame++) {
+  const sample = Math.round(2000 * Math.sin(2 * Math.PI * frame / 128));
+  tone.writeInt16LE(sample, frame * 4);
+  tone.writeInt16LE(sample, frame * 4 + 2);
+}
 await pipeline(Readable.from((async function* () {
   yield preamble;
   hash.update(wav); yield wav;
-  for (let bytes = 0; bytes < dataSize; bytes += zero.length) { hash.update(zero); yield zero; }
+  for (let bytes = 0; bytes < dataSize; bytes += tone.length) { hash.update(tone); yield tone; }
   yield closing;
 })()), req);
 const response = await responsePromise;
 assert.ok([200, 201].includes(response.status), response.body);
 const result = JSON.parse(response.body);
-const metadata = await fetch(`${base}/v1/songs/${result.id}`, { headers: { Authorization: `Bearer ${process.env.API_TOKEN}` } });
+const headers = { Authorization: `Bearer ${process.env.API_TOKEN}` };
+const metadata = await fetch(`${base}/v1/songs/${result.id}`, { headers });
 assert.equal(metadata.status, 200);
 const song = await metadata.json();
-assert.equal(song.byteSize, dataSize + 44);
-assert.equal(song.sha256, hash.digest('hex'));
-console.log(`PASS: 16 MiB streamed upload via Nginx, persisted byte size and SHA-256 (${result.status})`);
+assert.equal(song.mimeType, 'audio/flac');
+assert.notEqual(song.sha256, hash.digest('hex'));
+const audioUrl = `${base}/v1/songs/${result.id}/audio`;
+const header = await fetch(audioUrl, { headers: { ...headers, Range: 'bytes=0-3' } });
+assert.equal(header.status, 206);
+assert.equal(await header.text(), 'fLaC');
+const audio = await fetch(audioUrl, { headers });
+assert.equal(audio.status, 200);
+const storedHash = createHash('sha256');
+let storedBytes = 0;
+for await (const chunk of audio.body) { storedBytes += chunk.length; storedHash.update(chunk); }
+assert.equal(song.byteSize, storedBytes);
+assert.equal(song.sha256, storedHash.digest('hex'));
+console.log(`PASS: 16 MiB streamed upload via Nginx and normalized FLAC size, SHA-256 and Range (${result.status})`);

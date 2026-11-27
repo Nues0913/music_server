@@ -1,6 +1,6 @@
 # Linux 測試
 
-所有測試、合成音檔工具與記憶體檢查集中在本目錄。以下 Node.js 指令從 `api/` 執行。
+所有測試、合成音檔工具與記憶體檢查集中在本目錄。以下 Node.js 指令從 `api/` 執行。上傳整合測試需安裝 FFmpeg。
 
 ## 整合測試
 
@@ -36,7 +36,7 @@ npm run test:upload
 
 Docker 曲庫則使用 `npm run test:fixture -- ../data/container/inbox`，再從根目錄執行 `docker compose exec api node dist/cli.js import`。
 
-`test:smoke` 檢查健康、授權、中文搜尋、SHA-256、HEAD、Range 206、私有目錄與並行串流。`test:upload` 檢查 16 MiB 串流上傳、大小與 SHA-256。
+`test:smoke` 檢查健康、授權、中文搜尋、SHA-256、HEAD、Range 206、私有目錄與並行串流。`test:upload` 串流上傳 16 MiB WAV，再驗證 FLAC 成品的大小、SHA-256 與 Range。
 
 預設入口為 `http://127.0.0.1`；可設定 `SMOKE_URL=https://music.example.com`。測試金鑰預設讀 `api/.env`；測 Docker 時若金鑰不同，以環境變數提供 API_TOKEN／ADMIN_TOKEN。瀏覽器測試需要 `data/inbox` 的合成音檔，使用 Docker 曲庫時也執行一次不帶參數的 `test:fixture`。
 

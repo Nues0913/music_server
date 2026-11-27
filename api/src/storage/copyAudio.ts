@@ -19,12 +19,17 @@ export async function copyAudio(source: string, temporary: string, expectedSize:
 }
 
 export async function audioMatches(path: string, size: number, sha256: string): Promise<boolean> {
+  const fingerprint = await fingerprintAudio(path, size);
+  return fingerprint?.byteSize === size && fingerprint.sha256 === sha256;
+}
+
+export async function fingerprintAudio(path: string, maxBytes: number) {
   const hash = createHash('sha256');
   let bytes = 0;
   for await (const chunk of createReadStream(path)) {
     bytes += chunk.length;
-    if (bytes > size) return false;
+    if (bytes > maxBytes) return undefined;
     hash.update(chunk);
   }
-  return bytes === size && hash.digest('hex') === sha256;
+  return { byteSize: bytes, sha256: hash.digest('hex') };
 }

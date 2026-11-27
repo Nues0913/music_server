@@ -17,6 +17,7 @@ model Song {
   mimeType        String   @map("mime_type")
   byteSize        Int      @map("byte_size")
   sha256          String   @unique
+  uploadSourceSha256 String? @unique @map("upload_source_sha256")
   status          String   @default("active")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")

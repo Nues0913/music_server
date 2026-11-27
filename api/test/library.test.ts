@@ -1,6 +1,7 @@
 import { before, after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,14 +20,28 @@ const token = 'test-only-token-012345678901234567890123456789';
 const headers = { authorization: `Bearer ${token}` };
 const adminToken = 'admin-only-token-012345678901234567890123456789';
 
-function wav() {
-  const buffer = Buffer.alloc(44 + 16000);
+function wav(seconds = 1, amplitude = 0, withPeaks = false) {
+  const bytes = 16000 * seconds;
+  const buffer = Buffer.alloc(44 + bytes);
   buffer.write('RIFF'); buffer.writeUInt32LE(buffer.length - 8, 4); buffer.write('WAVEfmt ', 8);
   buffer.writeUInt32LE(16, 16); buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(1, 22);
   buffer.writeUInt32LE(8000, 24); buffer.writeUInt32LE(16000, 28);
   buffer.writeUInt16LE(2, 32); buffer.writeUInt16LE(16, 34);
-  buffer.write('data', 36); buffer.writeUInt32LE(16000, 40);
+  buffer.write('data', 36); buffer.writeUInt32LE(bytes, 40);
+  for (let i = 0; i < bytes / 2; i++) {
+    const sample = withPeaks && i % 8000 === 2000 ? 31500 : amplitude * Math.sin(2 * Math.PI * 440 * i / 8000);
+    buffer.writeInt16LE(Math.round(sample), 44 + i * 2);
+  }
   return buffer;
+}
+
+function measure(path: string) {
+  const result = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', path, '-map', '0:a:0',
+    '-af', 'ebur128=peak=true:framelog=verbose', '-f', 'null', '-'], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const summary = result.stderr.split('Summary:').at(-1)!;
+  return { lufs: Number(summary.match(/I:\s+([\d.-]+)\s+LUFS/)?.[1]),
+    peak: Number(summary.match(/Peak:\s+([\d.-]+)\s+dBFS/)?.[1]) };
 }
 
 before(async () => {
@@ -38,8 +53,8 @@ before(async () => {
     env: { ...process.env, DATABASE_URL: url, RUST_LOG: 'info' }, stdio: 'pipe',
   });
   db = await connectDatabase(url);
-  options = { db, audioRoot, inbox, maxBytes: 100000, minFreeBytes: 1, quotaBytes: 1000000 };
-  app = buildApp({ db, token, audioRoot, upload: { adminToken, maxBytes: 100000, minFreeBytes: 1, quotaBytes: 1000000 } });
+  options = { db, audioRoot, inbox, maxBytes: 1000000, minFreeBytes: 1, quotaBytes: 2000000 };
+  app = buildApp({ db, token, audioRoot, upload: { ...options, adminToken } });
 });
 after(async () => {
   if (app) await app.close();
@@ -147,12 +162,12 @@ test('admin UI does not expose credentials; playback token cannot upload', async
   assert.ok(!page.body.includes(adminToken));
   assert.ok(!page.body.includes(token));
   assert.match(page.headers['content-security-policy'] as string, /frame-ancestors 'none'/);
-  assert.equal((await app.inject('/admin/config')).json().maxBytes, 100000);
+  assert.equal((await app.inject('/admin/config')).json().maxBytes, options.maxBytes);
   assert.equal((await app.inject({ method: 'POST', url: '/v1/songs', ...multipartPayload(wav()), headers })).statusCode, 401);
 });
 
-test('multipart upload supports metadata after file, duplicate detection and path-safe names', async () => {
-  const audio = wav(); audio.writeInt16LE(51, 44);
+test('multipart upload normalizes in linear mode, saves the output hash and preserves duplicate ID and metadata', async () => {
+  const audio = wav(2, 1200);
   const metadata = '--music-test-boundary\r\nContent-Disposition: form-data; name="title"\r\n\r\n網頁歌曲\r\n' +
     '--music-test-boundary\r\nContent-Disposition: form-data; name="artist"\r\n\r\n測試歌手\r\n';
   const request = multipartPayload(audio, '../../上傳.wav', metadata);
@@ -162,18 +177,72 @@ test('multipart upload supports metadata after file, duplicate detection and pat
   assert.equal(response.json().song.artist, '測試歌手');
   const id = response.json().id;
   const saved = await db.song.findUniqueOrThrow({ where: { id } });
-  assert.match(saved.fileKey, /^[a-f0-9-]+\.wav$/);
+  assert.match(saved.fileKey, /^[a-f0-9-]+\.flac$/);
+  assert.equal(saved.mimeType, 'audio/flac');
+  const path = join(options.audioRoot, saved.fileKey);
+  const stored = await readFile(path);
+  assert.equal(stored.toString('ascii', 0, 4), 'fLaC');
+  assert.equal(saved.byteSize, stored.length);
+  assert.equal(saved.sha256, createHash('sha256').update(stored).digest('hex'));
+  assert.equal(saved.uploadSourceSha256, createHash('sha256').update(audio).digest('hex'));
+  assert.notEqual(saved.sha256, saved.uploadSourceSha256);
+  const output = measure(path);
+  assert.ok(Math.abs(output.lufs - (-17)) <= 0.3, JSON.stringify(output));
+  assert.ok(output.peak <= -2, JSON.stringify(output));
+  assert.ok(Math.abs(saved.durationSeconds! - 2) <= 0.01);
+  const publicSong = (await app.inject({ url: `/v1/songs/${id}`, headers })).json();
+  assert.equal(publicSong.sha256, saved.sha256);
+  assert.equal(publicSong.byteSize, saved.byteSize);
+  assert.equal(publicSong.uploadSourceSha256, undefined);
   const duplicate = await app.inject({ method: 'POST', url: '/v1/songs', ...request });
   assert.equal(duplicate.statusCode, 200); assert.equal(duplicate.json().status, 'duplicate');
   assert.equal(duplicate.json().id, id);
+  await rm(path);
+  const repair = await app.inject({ method: 'POST', url: '/v1/songs', ...request });
+  assert.equal(repair.statusCode, 200, repair.body);
+  assert.deepEqual(await readFile(path), stored);
+  assert.deepEqual(await db.song.findUniqueOrThrow({ where: { id } }), saved);
   assert.deepEqual(await readdir(join(options.audioRoot, '.uploads')), []);
+});
+
+test('peak-limited upload uses dynamic normalization and persists the full audio duration', async () => {
+  const audio = wav(4, 950, true);
+  const source = join(root, 'peaks.wav'); await writeFile(source, audio);
+  const original = measure(source);
+  assert.ok(original.peak + (-17 - original.lufs) > -2, JSON.stringify(original));
+  const response = await app.inject({ method: 'POST', url: '/v1/songs', ...multipartPayload(audio) });
+  assert.equal(response.statusCode, 201, response.body);
+  const saved = await db.song.findUniqueOrThrow({ where: { id: response.json().id } });
+  const output = measure(join(options.audioRoot, saved.fileKey));
+  assert.ok(Math.abs(output.lufs + 17) <= 1, JSON.stringify(output));
+  assert.ok(output.peak <= -2, JSON.stringify(output));
+  assert.ok(Math.abs(saved.durationSeconds! - 4) <= 0.01);
+});
+
+test('compressed upload whose normalized output exceeds the size cap leaves neither a song nor partial audio', async t => {
+  const source = join(root, 'over-limit.mp3');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=20',
+    '-c:a', 'libmp3lame', '-b:a', '24k', source]);
+  const audio = await readFile(source);
+  const maxBytes = 100000;
+  assert.ok(audio.length < maxBytes);
+  const limited = buildApp({ db, token, audioRoot: options.audioRoot, upload: { ...options, adminToken, maxBytes } });
+  t.after(() => limited.close());
+  const count = await db.song.count();
+  const response = await limited.inject({ method: 'POST', url: '/v1/songs', ...multipartPayload(audio, 'over-limit.mp3') });
+  assert.equal(response.statusCode, 413, response.body);
+  assert.match(response.json().error, /響度正規化/);
+  assert.equal(await db.song.count(), count);
+  assert.deepEqual(await readdir(join(options.audioRoot, '.uploads')), []);
+  assert.equal((await readdir(options.audioRoot)).some(name => name.endsWith('.part') || name === '.import-lock'), false);
 });
 
 test('oversized, invalid and extra-field uploads clean staging without publishing', async () => {
   const count = await db.song.count();
   const cases = [
-    { request: multipartPayload(Buffer.alloc(100001)), status: 413 },
+    { request: multipartPayload(Buffer.alloc(options.maxBytes + 1)), status: 413 },
     { request: multipartPayload(Buffer.from('invalid audio')), status: 400 },
+    { request: multipartPayload(wav(3)), status: 400 },
     { request: multipartPayload(wav(), 'script.exe'), status: 415 },
     { request: multipartPayload(wav(), 'valid.wav', '--music-test-boundary\r\nContent-Disposition: form-data; name="unexpected"\r\n\r\nvalue\r\n'), status: 400 },
   ];
@@ -210,4 +279,44 @@ test('aborted upload releases the slot and removes staging without inserting a s
   assert.equal(await db.song.count(), count);
   const next = await app.inject({ method: 'POST', url: '/v1/songs', ...multipartPayload(wav()) });
   assert.equal(next.statusCode, 200, next.body);
+});
+
+test('disconnect after request body kills FFmpeg, cleans temporary files and releases the import lock', { timeout: 10000 }, async () => {
+  const bin = join(root, 'test-bin');
+  const pidFile = join(root, 'ffmpeg.pid');
+  await mkdir(bin);
+  await writeFile(join(bin, 'ffmpeg'), '#!/bin/sh\nprintf "%s" "$$" > "$UPLOAD_TEST_PID_FILE"\nexec sleep 60\n', { mode: 0o700 });
+  const savedPath = process.env.PATH ?? '';
+  const count = await db.song.count();
+  const { headers, payload } = multipartPayload(wav(2, 2300));
+  const address = app.server.address();
+  assert.ok(address && typeof address !== 'string');
+  process.env.PATH = `${bin}:${savedPath}`;
+  process.env.UPLOAD_TEST_PID_FILE = pidFile;
+  const request = httpRequest(`http://127.0.0.1:${address.port}/v1/songs`, {
+    method: 'POST', headers: { ...headers, 'content-length': payload.length },
+  });
+  request.on('error', () => {});
+  try {
+    request.end(payload);
+    let pid = 0;
+    for (let i = 0; i < 100 && !pid; i++) {
+      pid = Number(await readFile(pidFile, 'utf8').catch(() => ''));
+      if (!pid) await delay(20);
+    }
+    assert.ok(pid, 'FFmpeg started after receiving the complete upload');
+    request.destroy();
+    const staging = join(options.audioRoot, '.uploads');
+    for (let i = 0; i < 100 && (await readdir(staging)).length; i++) await delay(20);
+    assert.deepEqual(await readdir(staging), []);
+    assert.ok(!(await readdir(options.audioRoot)).includes('.import-lock'));
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    assert.equal(await db.song.count(), count);
+  } finally {
+    request.destroy();
+    process.env.PATH = savedPath;
+    delete process.env.UPLOAD_TEST_PID_FILE;
+  }
+  const retry = await app.inject({ method: 'POST', url: '/v1/songs', headers, payload });
+  assert.equal(retry.statusCode, 201, retry.body);
 });

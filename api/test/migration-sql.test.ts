@@ -24,3 +24,21 @@ test('SQLite migration retains IDs, child references, revisions and cascade whil
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM playlist_entries').get()?.count, 0);
   } finally { db.close(); }
 });
+
+test('upload fingerprint migration preserves existing songs and allows only unique non-null upload fingerprints', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(readFileSync('prisma/migrations/20261006030000_init/migration.sql', 'utf8'));
+    const insert = db.prepare(`INSERT INTO songs(id,file_key,title,mime_type,byte_size,sha256,updated_at)
+      VALUES (?, ?, 'Existing song', 'audio/mpeg', 1234, ?, CURRENT_TIMESTAMP)`);
+    insert.run('saved-1', 'first.mp3', 'stored-1');
+    insert.run('saved-2', 'second.mp3', 'stored-2');
+    const original = db.prepare('SELECT * FROM songs ORDER BY id').all();
+    db.exec(readFileSync('prisma/migrations/20261127000000_upload_source_sha256/migration.sql', 'utf8'));
+    assert.deepEqual(db.prepare('SELECT * FROM songs ORDER BY id').all().map(row => ({ ...row })),
+      original.map(row => ({ ...row, upload_source_sha256: null })));
+    const recordSource = db.prepare('UPDATE songs SET upload_source_sha256 = ? WHERE id = ?');
+    recordSource.run('source-hash', 'saved-1');
+    assert.throws(() => recordSource.run('source-hash', 'saved-2'), /UNIQUE constraint failed/);
+  } finally { db.close(); }
+});

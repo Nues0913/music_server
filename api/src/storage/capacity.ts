@@ -13,7 +13,11 @@ export async function assertLibraryQuota(db: PrismaClient, size: number, quotaBy
 }
 
 export async function uploadDiskBudget(root: string, minFreeBytes: number) {
+  // Reserve space for staging and an output file. The encoder checks the actual output budget separately.
+  return Math.floor(await availableDiskBudget(root, minFreeBytes) / 2);
+}
+
+export async function availableDiskBudget(root: string, minFreeBytes: number) {
   const space = await statfs(root);
-  // An upload needs both its staging file and the subsequent import copy.
-  return Math.floor((space.bavail * space.bsize - minFreeBytes) / 2);
+  return space.bavail * space.bsize - minFreeBytes;
 }

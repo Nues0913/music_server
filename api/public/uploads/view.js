@@ -12,7 +12,7 @@ export function createUploadView(document) {
     const row = rows.get(entry.id);
     if (!row) return;
     row.root.dataset.state = entry.state;
-    const labels = { pending: '等待上傳', invalid: '無法上傳', uploading: entry.progress === 100 ? '正在驗證並加入曲庫…' : `正在上傳 ${entry.progress}%`,
+    const labels = { pending: '等待上傳', invalid: '無法上傳', uploading: entry.progress === 100 ? '正在量測、調整響度並加入曲庫…' : `正在上傳 ${entry.progress}%`,
       imported: '已加入曲庫', duplicate: '曲庫已有相同音檔', failed: '上傳失敗', cancelled: '已取消' };
     row.status.textContent = `${labels[entry.state]}${entry.error ? '：' + entry.error : ''}`;
     row.progress.hidden = entry.state !== 'uploading'; row.progress.value = entry.progress;

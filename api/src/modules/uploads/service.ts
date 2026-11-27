@@ -8,10 +8,11 @@ import { receiveMultipart } from './multipart.js';
 import { UploadError } from './errors.js';
 
 export type UploadOptions = CapacityLimits & { adminToken: string; };
+export const uploadProcessingTimeoutMs = 10 * 60_000;
 export class UploadService {
   private uploading = false;
   constructor(private readonly db: PrismaClient, private readonly audioRoot: string, private readonly limits: CapacityLimits) {}
-  async upload(parts: AsyncIterable<Multipart>) {
+  async upload(parts: AsyncIterable<Multipart>, disconnected: AbortSignal) {
     if (this.uploading) throw new UploadError(409, '已有上傳正在處理，請稍後再試', '5');
     this.uploading = true;
     let staging: string | undefined;
@@ -21,8 +22,10 @@ export class UploadService {
       const diskBudget = await uploadDiskBudget(this.audioRoot, this.limits.minFreeBytes);
       if (diskBudget <= 0) throw new UploadError(507, '磁碟可用空間不足');
       staging = await mkdtemp(join(stagingRoot, 'upload-'));
-      const { source, labels } = await receiveMultipart(parts, staging, this.limits.maxBytes, diskBudget);
-      const result = await importFile({ ...this.limits, db: this.db, audioRoot: this.audioRoot, inbox: staging }, source, labels);
+      const { source, sourceSha256, labels } = await receiveMultipart(parts, staging, this.limits.maxBytes, diskBudget);
+      const signal = AbortSignal.any([disconnected, AbortSignal.timeout(uploadProcessingTimeoutMs)]);
+      const result = await importFile({ ...this.limits, db: this.db, audioRoot: this.audioRoot, inbox: staging },
+        source, labels, { sourceSha256, signal });
       const song = await this.db.song.findUniqueOrThrow({ where: { id: result.id }, select: { id: true, title: true, artist: true, status: true } });
       return { status: result.status === 'imported' ? 201 : 200, body: { ...result, song } };
     } finally {

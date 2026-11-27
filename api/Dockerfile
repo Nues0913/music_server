@@ -14,6 +14,7 @@ COPY src ./src
 RUN npm run build && npm prune --omit=dev --no-audit --no-fund
 
 FROM base AS production
+RUN apk add --no-cache ffmpeg
 ENV NODE_ENV=production
 COPY --from=builder /app/package.json /app/package-lock.json ./
 COPY --from=builder /app/node_modules ./node_modules
