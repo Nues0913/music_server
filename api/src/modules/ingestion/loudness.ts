@@ -6,6 +6,9 @@ import { CapacityError, InvalidAudioError, NormalizedAudioTooLargeError } from '
 
 const peakLimit = -2;
 const target = `loudnorm=I=-17:TP=${peakLimit}:LRA=50`;
+const sampleClock = 'asetpts=N/SR/TB';
+// Some encoders and containers add or drop a few frames of codec delay or padding.
+const durationToleranceUs = 100_000;
 const opus = ['-c:a', 'libopus', '-b:a', '128k'];
 const formats: Readonly<Record<string, { demuxer: string; muxer: string; encode: string[] }>> = {
   '.mp3': { demuxer: 'mp3', muxer: 'mp3', encode: ['-c:a', 'libmp3lame', '-q:a', '2'] },
@@ -22,9 +25,9 @@ async function runFfmpeg(path: string, demuxer: string, output: string[], signal
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
     const child = spawn('ffmpeg', [
       '-nostdin', '-hide_banner', '-nostats', '-stats_period', '3600', '-loglevel', 'info', '-xerror',
-      '-filter_threads', '1', '-max_alloc', '67108864', '-progress', 'pipe:1',
+      '-filter_threads', '1', '-filter_complex_threads', '1', '-max_alloc', '67108864', '-progress', 'pipe:1',
       '-protocol_whitelist', 'file', '-threads', '1', '-f', demuxer, '-i', path,
-      '-map', '0:a:0', '-map_metadata', '-1', '-map_chapters', '-1', ...output,
+      '-map', analysis ? '[clock]' : '0:a:0', '-map_metadata', '-1', '-map_chapters', '-1', ...output,
     ], { signal, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '', processError: Error | undefined;
     child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout = (stdout + chunk).slice(-4096); });
@@ -69,8 +72,11 @@ export async function normalizeUpload(input: { path: string; extension: string }
   audioRoot: string, limits: CapacityLimits, signal: AbortSignal) {
   const format = formats[input.extension.toLowerCase()];
   if (!format) throw new InvalidAudioError('Unsupported audio extension');
+  // loudnorm's dynamic filter can report a padded last block. Count decoded input samples on a separate branch.
+  const analysisFilter = `[0:a:0]aresample=48000,asplit=2[raw][meter];[raw]${sampleClock}[clock];` +
+    `[meter]${target}:print_format=json,anullsink`;
   const analysis = await runFfmpeg(input.path, format.demuxer,
-    ['-af', `aresample=48000,${target}:print_format=json`, '-ar', '48000', '-f', 'null', '-'], signal, true);
+    ['-filter_complex', analysisFilter, '-ar', '48000', '-f', 'null', '-'], signal, true);
   const inputTime = finishedAt(analysis.stdout);
   const measured = measuredOptions(analysis.stderr);
   const diskBudget = await availableDiskBudget(audioRoot, limits.minFreeBytes);
@@ -78,23 +84,26 @@ export async function normalizeUpload(input: { path: string; extension: string }
   if (maxOutput <= 0) throw new CapacityError('Insufficient space for normalized audio');
   const render = async (trimDb: number) => {
     const filter = `aresample=48000,${target}:${measured}:linear=true,aresample=48000,volume=${trimDb}dB`;
-    const encoded = await runFfmpeg(input.path, format.demuxer, [
+    await runFfmpeg(input.path, format.demuxer, [
       '-af', filter, '-ar', '48000', ...format.encode,
       '-threads', '1', '-fflags', '+bitexact', '-flags:a', '+bitexact', '-fs', String(maxOutput + 1),
       '-f', format.muxer, destination,
     ], signal);
     const size = (await stat(destination)).size;
-    // FFmpeg's -fs may exit successfully with partial audio and can exceed the limit by a packet.
-    const time = finishedAt(encoded.stdout);
-    if (size > maxOutput || time + 10_000 < inputTime) {
+    // FFmpeg's -fs can exceed the limit by a packet. Classify size errors using actual bytes only.
+    if (size > maxOutput) {
       if (diskBudget < limits.maxBytes) throw new CapacityError('Insufficient space for normalized audio');
       throw new NormalizedAudioTooLargeError('Normalized audio exceeds file size limit');
     }
-    // Lossy encoders can introduce new peaks. Measure the actual file clients will decode.
+    // A capped render may still exit successfully. Verify decoded length and peak in the final file.
     const checks = await runFfmpeg(destination, format.demuxer,
-      ['-af', 'ebur128=peak=true:framelog=verbose', '-f', 'null', '-'], signal);
+      ['-af', `aresample=48000,${sampleClock},ebur128=peak=true:framelog=verbose`, '-f', 'null', '-'], signal);
+    const time = finishedAt(checks.stdout);
+    if (time + durationToleranceUs < inputTime) {
+      throw new Error(`Normalized audio is incomplete (${time} of ${inputTime} microseconds)`);
+    }
     const summary = checks.stderr.slice(checks.stderr.lastIndexOf('Summary:'));
-    const peak = Number(summary.match(/True peak:\s+Peak:\s+(-?\d+(?:\.\d+)?)\s+dBFS/)?.[1]);
+    const peak = Number(summary.match(/True peak:\s+Peak:\s+([+-]?\d+(?:\.\d+)?)\s+dBFS/)?.[1]);
     if (!Number.isFinite(peak)) throw new Error('FFmpeg did not return output true peak');
     return { size, time, peak };
   };

@@ -220,6 +220,22 @@ test('peak-limited MP3 upload uses dynamic normalization and respects the peak c
   assert.ok(Math.abs(saved.durationSeconds! - 4) <= 0.01);
 });
 
+test('a valid MP3 without a Xing header is not rejected as too large when FFmpeg reports different pass durations', async () => {
+  const source = join(root, 'no-xing.mp3');
+  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=16.313:sample_rate=44100',
+    '-c:a', 'libmp3lame', '-q:a', '0', '-write_xing', '0', source]);
+  const bytes = await readFile(source);
+  assert.ok(bytes.length < options.maxBytes / 2);
+  const response = await app.inject({ method: 'POST', url: '/v1/songs', ...multipartPayload(bytes, 'no-xing.mp3') });
+  assert.equal(response.statusCode, 201, response.body);
+  const saved = await db.song.findUniqueOrThrow({ where: { id: response.json().id } });
+  assert.ok(saved.fileKey.endsWith('.mp3'));
+  assert.ok(saved.byteSize < options.maxBytes / 2);
+  assert.ok(Math.abs(saved.durationSeconds! - 16.35) < 0.05);
+  const output = measure(join(options.audioRoot, saved.fileKey));
+  assert.ok(Math.abs(output.lufs + 17) <= 0.3 && output.peak <= -2, JSON.stringify(output));
+});
+
 test('uploads retain every accepted extension and MIME type, including mixed case, with real normalized audio', async t => {
   const formats = [
     { suffix: 'MP3', encoder: 'libmp3lame', codec: 'mp3', mime: 'audio/mpeg' },
