@@ -62,7 +62,7 @@ export function createUploadController(view, client) {
                 if (disposed || currentRequest !== requestId || entry.state !== 'uploading') return;
                 entry.progress = percent; view.entry(entry);
                 view.progress(Math.round((index + percent / 100) / jobs.length * 100));
-                view.message(percent === 100 ? `傳送完成，正在驗證 ${index + 1}/${jobs.length}：${entry.name}`
+                view.message(percent === 100 ? `傳送完成，正在處理 ${index + 1}/${jobs.length}：${entry.name}`
                   : `正在上傳 ${index + 1}/${jobs.length}：${entry.name}（${percent}%）`);
               },
             });
