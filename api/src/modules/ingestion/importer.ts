@@ -28,7 +28,7 @@ export async function importFile(options: ImportOptions, source: string, labels:
   const lock = join(audioRoot, '.import-lock');
   // One importer owns publication and capacity checks. A crash lock needs operator inspection.
   await mkdir(lock);
-  const fileKey = `${randomUUID()}${upload ? '.flac' : input.extension}`;
+  const fileKey = `${randomUUID()}${upload ? input.extension : input.extension.toLowerCase()}`;
   const temporary = join(audioRoot, `${fileKey}.part`), destination = join(audioRoot, fileKey);
   let published = false;
   try {
@@ -68,7 +68,7 @@ export async function importFile(options: ImportOptions, source: string, labels:
     upload?.signal.throwIfAborted();
     await rename(temporary, destination);
     const song = await db.song.create({ data: {
-      fileKey, mimeType: upload ? 'audio/flac' : input.mimeType, uploadSourceSha256: upload?.sourceSha256,
+      fileKey, mimeType: input.mimeType, uploadSourceSha256: upload?.sourceSha256,
       ...metadata, ...fingerprint,
     } });
     published = true;

@@ -31,7 +31,7 @@ export async function receiveMultipart(parts: AsyncIterable<Multipart>, staging:
       if (part.fieldname !== 'file' || source) throw new UploadError(400, '每次僅能上傳一個 file 欄位');
       originalName = basename(part.filename.replaceAll('\\', '/'));
       if (!audioMimeType(originalName)) throw new UploadError(415, '不支援此音檔格式');
-      source = join(staging, `${randomUUID()}${extname(originalName).toLowerCase()}`);
+      source = join(staging, `${randomUUID()}${extname(originalName)}`);
       sourceSha256 = await writePart(part, source, maxBytes, diskBudget);
     } else {
       if (part.fieldname !== 'title' && part.fieldname !== 'artist') throw new UploadError(400, '僅接受 title 與 artist 欄位');

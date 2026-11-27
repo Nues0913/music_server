@@ -177,11 +177,11 @@ test('multipart upload normalizes in linear mode, saves the output hash and pres
   assert.equal(response.json().song.artist, '測試歌手');
   const id = response.json().id;
   const saved = await db.song.findUniqueOrThrow({ where: { id } });
-  assert.match(saved.fileKey, /^[a-f0-9-]+\.flac$/);
-  assert.equal(saved.mimeType, 'audio/flac');
+  assert.match(saved.fileKey, /^[a-f0-9-]+\.wav$/);
+  assert.equal(saved.mimeType, 'audio/wav');
   const path = join(options.audioRoot, saved.fileKey);
   const stored = await readFile(path);
-  assert.equal(stored.toString('ascii', 0, 4), 'fLaC');
+  assert.equal(stored.toString('ascii', 0, 4), 'RIFF');
   assert.equal(saved.byteSize, stored.length);
   assert.equal(saved.sha256, createHash('sha256').update(stored).digest('hex'));
   assert.equal(saved.uploadSourceSha256, createHash('sha256').update(audio).digest('hex'));
@@ -205,12 +205,13 @@ test('multipart upload normalizes in linear mode, saves the output hash and pres
   assert.deepEqual(await readdir(join(options.audioRoot, '.uploads')), []);
 });
 
-test('peak-limited upload uses dynamic normalization and persists the full audio duration', async () => {
-  const audio = wav(4, 950, true);
-  const source = join(root, 'peaks.wav'); await writeFile(source, audio);
+test('peak-limited MP3 upload uses dynamic normalization and respects the peak ceiling after encoding', async () => {
+  const input = join(root, 'peaks.wav'); await writeFile(input, wav(4, 950, true));
+  const source = join(root, 'peaks.mp3');
+  execFileSync('ffmpeg', ['-v', 'error', '-i', input, '-ar', '48000', '-c:a', 'libmp3lame', '-q:a', '0', source]);
   const original = measure(source);
   assert.ok(original.peak + (-17 - original.lufs) > -2, JSON.stringify(original));
-  const response = await app.inject({ method: 'POST', url: '/v1/songs', ...multipartPayload(audio) });
+  const response = await app.inject({ method: 'POST', url: '/v1/songs', ...multipartPayload(await readFile(source), 'peaks.mp3') });
   assert.equal(response.statusCode, 201, response.body);
   const saved = await db.song.findUniqueOrThrow({ where: { id: response.json().id } });
   const output = measure(join(options.audioRoot, saved.fileKey));
@@ -219,17 +220,53 @@ test('peak-limited upload uses dynamic normalization and persists the full audio
   assert.ok(Math.abs(saved.durationSeconds! - 4) <= 0.01);
 });
 
-test('compressed upload whose normalized output exceeds the size cap leaves neither a song nor partial audio', async t => {
-  const source = join(root, 'over-limit.mp3');
-  execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=20',
-    '-c:a', 'libmp3lame', '-b:a', '24k', source]);
-  const audio = await readFile(source);
+test('uploads retain every accepted extension and MIME type, including mixed case, with real normalized audio', async t => {
+  const formats = [
+    { suffix: 'MP3', encoder: 'libmp3lame', codec: 'mp3', mime: 'audio/mpeg' },
+    { suffix: 'FLAC', encoder: 'flac', codec: 'flac', mime: 'audio/flac' },
+    { suffix: 'Wav', encoder: 'pcm_s16le', codec: 'pcm_s24le', mime: 'audio/wav' },
+    { suffix: 'ogg', encoder: 'libvorbis', codec: 'vorbis', mime: 'audio/ogg' },
+    { suffix: 'opus', encoder: 'libopus', codec: 'opus', mime: 'audio/ogg' },
+    { suffix: 'm4a', encoder: 'aac', codec: 'aac', mime: 'audio/mp4' },
+    { suffix: 'webm', encoder: 'libopus', codec: 'opus', mime: 'audio/webm' },
+  ];
+  for (const [index, { suffix, encoder, codec, mime }] of formats.entries()) {
+    await t.test(suffix, async () => {
+      const source = join(root, `source.${suffix.toLowerCase()}`);
+      execFileSync('ffmpeg', ['-v', 'error', '-f', 'lavfi', '-i', `sine=frequency=${440 + index * 10}:duration=2`,
+        '-c:a', encoder, source]);
+      const request = multipartPayload(await readFile(source), `source.${suffix}`);
+      const response = await app.inject({ method: 'POST', url: '/v1/songs', ...request });
+      assert.equal(response.statusCode, 201, response.body);
+      const saved = await db.song.findUniqueOrThrow({ where: { id: response.json().id } });
+      assert.ok(saved.fileKey.endsWith(`.${suffix}`), saved.fileKey);
+      assert.equal(saved.mimeType, mime);
+      const destination = join(options.audioRoot, saved.fileKey);
+      const streamCodec = execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name',
+        '-of', 'default=nw=1:nk=1', destination], { encoding: 'utf8' }).trim();
+      assert.equal(streamCodec, codec);
+      const output = measure(destination);
+      assert.ok(Math.abs(output.lufs + 17) <= 0.6 && output.peak <= -2, JSON.stringify(output));
+      const stream = await app.inject({ url: `/v1/songs/${saved.id}/audio`, headers });
+      assert.equal(stream.statusCode, 200);
+      assert.equal(stream.headers['x-accel-redirect'], `/protected-audio/${saved.fileKey}`);
+      await rm(destination);
+      const repair = await app.inject({ method: 'POST', url: '/v1/songs', ...request });
+      assert.equal(repair.statusCode, 200, repair.body);
+      assert.equal(repair.json().id, saved.id);
+      assert.equal(createHash('sha256').update(await readFile(destination)).digest('hex'), saved.sha256);
+    });
+  }
+});
+
+test('WAV output that grows past the size cap leaves neither a song nor partial audio', async t => {
+  const audio = wav(2, 3330);
   const maxBytes = 100000;
   assert.ok(audio.length < maxBytes);
   const limited = buildApp({ db, token, audioRoot: options.audioRoot, upload: { ...options, adminToken, maxBytes } });
   t.after(() => limited.close());
   const count = await db.song.count();
-  const response = await limited.inject({ method: 'POST', url: '/v1/songs', ...multipartPayload(audio, 'over-limit.mp3') });
+  const response = await limited.inject({ method: 'POST', url: '/v1/songs', ...multipartPayload(audio, 'over-limit.wav') });
   assert.equal(response.statusCode, 413, response.body);
   assert.match(response.json().error, /響度正規化/);
   assert.equal(await db.song.count(), count);

@@ -13,5 +13,5 @@ export async function inspectImportSource(inbox: string, source: string, maxByte
   const mimeType = audioMimeType(candidate);
   if (!mimeType) throw new InvalidAudioError('Unsupported audio extension');
   if (!info.size || info.size > maxBytes) throw new InvalidAudioError('Invalid audio file size');
-  return { path: candidate, size: info.size, extension: extname(candidate).toLowerCase(), mimeType };
+  return { path: candidate, size: info.size, extension: extname(candidate), mimeType };
 }
