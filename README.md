@@ -218,6 +218,8 @@ docker compose exec api node dist/cli.js enable <song-id>
 
 同時只處理一筆上傳／匯入。磁碟需同時容納暫存原檔、正規化成品及 `MIN_FREE_BYTES`；成品以實際大小計入曲庫配額。原檔或成品超過大小上限會拒絕上傳。完全無聲或無法量出整體響度的內容也會拒絕。收到完整音檔後，正規化最多可花 10 分鐘。處理失敗會清除暫存且不新增曲目。
 
+網頁上傳收到完整音檔後會回覆 `202`，伺服器在背景處理，頁面另行查詢結果。處理完成後才顯示已加入或已存在。進度紀錄暫存在 API 程序中，重啟後請先搜尋曲庫確認結果再重試。
+
 停用拒絕新播放請求，保留音檔且不打斷既有串流。尚無實體刪除 CLI。匯入使用 `.import-lock`；異常退出時，確認沒有匯入工作後再清理殘留鎖及 `.part`。
 
 ## API
@@ -234,6 +236,8 @@ docker compose exec api node dist/cli.js enable <song-id>
 | HEAD /v1/songs/:id/audio | 取得完整 Content-Length，仍須授權 |
 
 POST 欄位：`file` 必填，`title`／`artist` 選填，各最多 500 字元。
+
+需要背景處理時，傳送 `Prefer: respond-async`。成功接收檔案後回 `202` 和 `{jobId}`。使用 `ADMIN_TOKEN` 讀取 `GET /v1/song-uploads/:id` 取得 `processing`、`complete`（含 `result`）、`failed`（含 `status` 和 `error`）或 `cancelled`。可呼叫同路徑的 `DELETE` 取消處理。預設同步呼叫仍使用下列範例與原有結果。
 
 ```bash
 curl -H "Authorization: Bearer <ADMIN_TOKEN>" \

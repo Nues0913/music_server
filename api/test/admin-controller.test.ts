@@ -41,6 +41,8 @@ test('batch uploads serially, forwards individual metadata, skips invalid files 
   rejectThird = false; await f.controller.submit();
   assert.deepEqual(names, ['first.wav', 'duplicate.wav', 'failed.wav', 'last.wav', 'failed.wav']);
   assert.equal(f.entries()[2].state, 'imported'); assert.equal(f.controller.isBusy(), false);
+  const summary = f.calls.filter(call => call[0] === 'message').at(-1)?.[1];
+  assert.match(String(summary), /1 首已加入曲庫.*0 首曲庫已有/);
   assert.deepEqual(f.calls.at(-2), ['busy', false, true]);
 });
 test('cancellation aborts the current file, preserves completed files and stops remaining requests until retry', async () => {
@@ -148,8 +150,53 @@ test('upload transport trims metadata, bounds progress and exposes HTTP failures
   const rejected = assert.rejects(request.done, (error: any) => error.status === 401 && /伺服器回應異常/.test(error.message));
   xhr.upload.onprogress({ lengthComputable: true, loaded: 110, total: 100 }); xhr.onload(); await rejected;
   assert.equal(xhr.headers.Authorization, 'Bearer token'); assert.deepEqual(fields.slice(0, 2), [['title', 'title'], ['artist', 'artist']]);
+  assert.equal(xhr.headers.Prefer, 'respond-async');
   assert.deepEqual(percentages, [100]);
   const jsonFailure = client.upload({ file: {}, title: '', artist: '', token: '', onProgress() {} });
   const jsonRejected = assert.rejects(jsonFailure.done, (error: any) => error.status === 403 && error.message === 'denied');
   xhr.status = 403; xhr.responseText = '{"error":"denied"}'; xhr.onload(); await jsonRejected;
+});
+
+test('accepted upload retries only the status request after a proxy 504 and reports the final result', async () => {
+  let xhr: any;
+  let uploads = 0;
+  const jobId = '12345678-1234-1234-1234-123456789abc';
+  const steps = [new Response('Gateway Timeout', { status: 504 }), Response.json({ state: 'processing' }),
+    Response.json({ state: 'complete', result: song('duplicate') })];
+  const client = createUploadClient({ XMLHttpRequest: class {
+    upload = {}; status = 202; responseText = JSON.stringify({ jobId });
+    constructor() { xhr = this; }
+    open() {} setRequestHeader() {} send() { uploads++; }
+  }, FormData: class { append() {} }, pollIntervalMs: 1, fetch: async (url: string, options: any) => {
+    assert.equal(url, `/v1/song-uploads/${jobId}`);
+    assert.equal(options.headers.Authorization, 'Bearer private');
+    return steps.shift()!;
+  } });
+  const upload = client.upload({ file: {}, title: '', artist: '', token: 'private', onProgress() {} });
+  xhr.onload();
+  assert.deepEqual(await upload.done, song('duplicate'));
+  assert.equal(uploads, 1);
+  assert.equal(steps.length, 0);
+});
+
+test('cancelling while waiting for the result stops polling and asks the server to cancel the job', async () => {
+  let xhr: any;
+  const jobId = '12345678-1234-1234-1234-123456789abc';
+  const calls: string[] = [];
+  const client = createUploadClient({ XMLHttpRequest: class {
+    upload = {}; status = 202; responseText = JSON.stringify({ jobId });
+    constructor() { xhr = this; }
+    open() {} setRequestHeader() {} send() {}
+  }, FormData: class { append() {} }, pollIntervalMs: 60_000, fetch: async (url: string, options: any) => {
+    assert.equal(url, `/v1/song-uploads/${jobId}`);
+    calls.push(options.method ?? 'GET');
+    return options.method === 'DELETE' ? new Response(null, { status: 204 }) : Response.json({ state: 'processing' });
+  } });
+  const upload = client.upload({ file: {}, title: '', artist: '', token: 'private', onProgress() {} });
+  const pending = assert.rejects(upload.done, { cancelled: true });
+  xhr.onload();
+  await new Promise(resolve => setImmediate(resolve));
+  upload.abort();
+  await pending;
+  assert.deepEqual(calls, ['GET', 'DELETE']);
 });

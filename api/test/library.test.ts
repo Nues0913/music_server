@@ -373,3 +373,86 @@ test('disconnect after request body kills FFmpeg, cleans temporary files and rel
   const retry = await app.inject({ method: 'POST', url: '/v1/songs', headers, payload });
   assert.equal(retry.statusCode, 201, retry.body);
 });
+
+test('async upload replies after staging, preserves a single worker, and exposes completion or cancellation', { timeout: 15000 }, async () => {
+  const bin = join(root, 'background-test-bin');
+  const gate = join(root, 'background-test-gate');
+  const pidFile = join(root, 'background-test-pid');
+  const realFfmpeg = execFileSync('sh', ['-c', 'command -v ffmpeg'], { encoding: 'utf8' }).trim();
+  await mkdir(bin);
+  await writeFile(join(bin, 'ffmpeg'), `#!/bin/sh
+printf '%s' "$$" > "$UPLOAD_TEST_PID_FILE"
+attempt=0
+while [ ! -f "$UPLOAD_TEST_GATE" ] && [ "$attempt" -lt 150 ]; do
+  sleep 0.02
+  attempt=$((attempt + 1))
+done
+exec "$UPLOAD_TEST_FFMPEG" "$@"
+`, { mode: 0o700 });
+  const savedPath = process.env.PATH ?? '';
+  const request = multipartPayload(wav(2, 3290), 'background.wav');
+  const authorized = { authorization: request.headers.authorization };
+  const post = (payload = request) => app.inject({ method: 'POST', url: '/v1/songs', ...payload,
+    headers: { ...payload.headers, prefer: 'respond-async' } });
+  const status = async (url: string, until?: string) => {
+    for (let i = 0; i < 150; i++) {
+      const response = await app.inject({ url, headers: authorized });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(response.headers['cache-control'], 'no-store');
+      const job = response.json();
+      if (!until || job.state !== 'processing') {
+        if (until) assert.equal(job.state, until, response.body);
+        return job;
+      }
+      await delay(20);
+    }
+    assert.fail(`Job never reached ${until}`);
+  };
+  process.env.PATH = `${bin}:${savedPath}`;
+  process.env.UPLOAD_TEST_GATE = gate;
+  process.env.UPLOAD_TEST_PID_FILE = pidFile;
+  process.env.UPLOAD_TEST_FFMPEG = realFfmpeg;
+  try {
+    const count = await db.song.count();
+    const accepted = await post();
+    assert.equal(accepted.statusCode, 202, accepted.body);
+    const url = accepted.headers.location!;
+    assert.equal(url, `/v1/song-uploads/${accepted.json().jobId}`);
+    assert.equal(accepted.headers['preference-applied'], 'respond-async');
+    assert.equal((await app.inject(url)).statusCode, 401);
+    assert.equal((await app.inject({ method: 'DELETE', url, headers })).statusCode, 401);
+    assert.deepEqual(await status(url), { state: 'processing' });
+    assert.equal(await db.song.count(), count);
+    assert.equal((await post()).statusCode, 409);
+    await writeFile(gate, '');
+    const complete = await status(url, 'complete');
+    assert.equal(complete.result.song.title, 'background');
+    assert.equal(await db.song.count(), count + 1);
+    assert.deepEqual(await readdir(join(options.audioRoot, '.uploads')), []);
+    assert.equal((await status((await post()).headers.location!, 'complete')).result.id, complete.result.id);
+
+    const invalid = await post(multipartPayload(Buffer.from('invalid audio'), 'invalid.wav'));
+    assert.equal(invalid.statusCode, 202);
+    assert.equal((await status(invalid.headers.location!, 'failed')).status, 400);
+    await rm(gate); await rm(pidFile);
+    const cancel = await post(multipartPayload(wav(2, 864), 'cancelled-background.wav'));
+    assert.equal(cancel.statusCode, 202);
+    let pid = 0;
+    for (let i = 0; i < 100 && !pid; i++) {
+      pid = Number(await readFile(pidFile, 'utf8').catch(() => ''));
+      if (!pid) await delay(20);
+    }
+    assert.ok(pid);
+    assert.equal((await app.inject({ method: 'DELETE', url: cancel.headers.location!, headers: authorized })).statusCode, 204);
+    await status(cancel.headers.location!, 'cancelled');
+    assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+    assert.equal(await db.song.count(), count + 1);
+    assert.deepEqual(await readdir(join(options.audioRoot, '.uploads')), []);
+  } finally {
+    await writeFile(gate, '');
+    process.env.PATH = savedPath;
+    delete process.env.UPLOAD_TEST_GATE;
+    delete process.env.UPLOAD_TEST_PID_FILE;
+    delete process.env.UPLOAD_TEST_FFMPEG;
+  }
+});

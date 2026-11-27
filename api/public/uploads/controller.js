@@ -41,7 +41,8 @@ export function createUploadController(view, client) {
   }
   async function submit() {
     if (running || !enabled || disposed) return;
-    const jobs = entries.filter(entry => !finished(entry) && entry.state !== 'invalid');
+    const batch = entries.filter(entry => !finished(entry));
+    const jobs = batch.filter(entry => entry.state !== 'invalid');
     if (!jobs.length) return view.message('請選擇符合格式與大小限制、尚未完成的音檔。', 'error');
     const token = view.values().token;
     running = true; cancelled = false;
@@ -92,7 +93,7 @@ export function createUploadController(view, client) {
         if (!disposed) { view.entry(entry); view.progress(Math.round((index + 1) / jobs.length * 100)); }
       }
       if (disposed) return;
-      const count = state => entries.filter(entry => entry.state === state).length;
+      const count = state => batch.filter(entry => entry.state === state).length;
       const failed = count('failed') + count('invalid'), pending = count('pending') + count('cancelled');
       const prefix = stoppedByFailure ? '批次已停止' : cancelled ? '已取消批次' : '批次完成';
       view.message(`${prefix}：${count('imported')} 首已加入曲庫，${count('duplicate')} 首曲庫已有相同音檔，${failed} 首失敗，${pending} 首未完成。`,

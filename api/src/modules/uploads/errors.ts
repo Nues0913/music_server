@@ -12,5 +12,6 @@ export function uploadFailure(error: unknown) {
   if (failure.code === 'ENOSPC' || failure instanceof CapacityError) return { status: 507, error: '磁碟空間或曲庫配額不足' };
   if (failure instanceof NormalizedAudioTooLargeError) return { status: 413, error: '響度正規化後的音檔超過大小上限' };
   if (failure instanceof InvalidAudioError) return { status: 400, error: '無法匯入音檔，請確認檔案完整且為有效音訊' };
+  if (failure.name === 'TimeoutError') return { status: 503, error: '音檔處理超過時間上限，請稍後再試' };
   return { status: 503, error: '服務暫時無法匯入音檔，請稍後再試', unexpected: true };
 }

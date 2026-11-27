@@ -53,7 +53,9 @@ revision 的 HTTP 驗證上限與 Prisma Int 一致，為 2147483647。從 21474
 
 `UploadService` 擁有程序內一筆上傳的 slot 與 staging 目錄；finally 清理 staging，即使清理失敗也釋放 slot。`receiveMultipart` 以 pipeline 寫入檔案，限制欄位、大小及磁碟預算，不將音檔全部載入 RAM。
 
-`importFile` 擁有 `.import-lock` 與發布流程。CLI 複製原檔，上傳的新音檔經 `ingestion/loudness.ts` 量測並按原副檔名編碼，量測成品的真峰值。原檔與成品分別保存指紋，讓重傳維持原 ID，而播放的大小與雜湊仍指向實際位元組。上傳斷線或超時時取消 FFmpeg。只有完整成品通過大小與配額檢查才 rename 並寫入 DB。失敗清理未發布檔案並在 finally 釋放鎖；原有 crash lock 的人工檢查規則保留。DB rollback 無法撤回檔案系統改名，因此檔案發布失敗補償保持明確。
+網頁透過 `Prefer: respond-async` 在接收完整檔案後取得工作 ID。上傳服務接管暫存檔與取消 signal，保留單一處理 slot，待清理完成才標記終止狀態。網頁以管理金鑰查詢結果，查詢遇短暫的代理錯誤可重試，取消使用 DELETE。工作結果只存在程序記憶體內，保留最多 64 筆及 30 分鐘。關閉時會取消並等待背景工作清理。
+
+`importFile` 擁有 `.import-lock` 與發布流程。CLI 複製原檔，上傳的新音檔經 `ingestion/loudness.ts` 量測並按原副檔名編碼，量測成品的真峰值。原檔與成品分別保存指紋，讓重傳維持原 ID，而播放的大小與雜湊仍指向實際位元組。同步上傳斷線、背景工作取消或處理超時會取消 FFmpeg。只有完整成品通過大小與配額檢查才 rename 並寫入 DB。失敗清理未發布檔案並在 finally 釋放鎖；原有 crash lock 的人工檢查規則保留。DB rollback 無法撤回檔案系統改名，因此檔案發布失敗補償保持明確。
 
 `server.ts` 透過 `infrastructure/shutdown.ts` 管理停止：SIGTERM、SIGINT 與啟動失敗共用同一個 stop promise，避免重複關閉。Fastify 停止接收新請求並排空已接受的 HTTP 工作後，onClose 才斷開 DB；即使斷線失敗也移除訊號 listeners。測試使用實際 HTTP socket 與注入的 DB 操作確認這個順序，不替代原生 Prisma 交易測試。CLI 在 finally 斷開 DB。程序內 slot 與跨程序 filesystem lock 職責不同，不把記憶體布林值當跨程序鎖。
 

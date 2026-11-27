@@ -31,7 +31,11 @@ export function buildApp(options: AppOptions) {
   registerAdmin(app, upload?.maxBytes ?? 256 * 1024 * 1024, Boolean(upload));
   app.register(async scope => registerSongs(scope, new SongService(db, audioRoot), token), { prefix: '/v1' });
   app.register(async scope => registerPlaylists(scope, new PlaylistService(db), token), { prefix: '/v1' });
-  if (upload) app.register(async scope => registerUpload(scope, new UploadService(db, audioRoot, upload), upload));
+  if (upload) app.register(async scope => {
+    const service = new UploadService(db, audioRoot, upload, error => scope.log.error({ err: error }, 'Background upload failed'));
+    scope.addHook('onClose', () => service.close());
+    await registerUpload(scope, service, upload);
+  });
   app.get('/health', async (_request, reply) => {
     try {
       await db.song.findFirst({ select: { id: true } });
